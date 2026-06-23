@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Sales workspace · Login</title>
+<style>
+  :root { color-scheme: light; }
+  * { box-sizing: border-box; }
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #F7F7F4; color: #1A1A1A; margin: 0; min-height: 100vh; display: flex; align-items: center; justify-content: center; }
+  .card { background: #fff; border: 0.5px solid rgba(0,0,0,0.08); border-radius: 16px; padding: 40px 36px; width: 100%; max-width: 380px; box-shadow: 0 1px 3px rgba(0,0,0,0.04); }
+  .brand-row { display: flex; align-items: center; gap: 12px; margin-bottom: 24px; }
+  .brand-logo { width: 44px; height: 44px; border-radius: 10px; background: #2D58A8; color: #fff; display: flex; align-items: center; justify-content: center; font-weight: 600; font-size: 18px; }
+  h1 { font-size: 18px; margin: 0; font-weight: 600; }
+  p.sub { font-size: 13px; color: #5F5E5A; margin: 0; }
+  label { display: block; font-size: 12px; color: #5F5E5A; margin-bottom: 6px; margin-top: 18px; font-weight: 500; }
+  input[type="email"], input[type="password"] { width: 100%; height: 44px; padding: 0 14px; border: 0.5px solid rgba(0,0,0,0.15); border-radius: 10px; background: #fff; font-size: 14px; color: #1A1A1A; font-family: inherit; }
+  input:focus { outline: 2px solid #2D58A8; outline-offset: -1px; border-color: transparent; }
+  button { margin-top: 20px; width: 100%; height: 44px; padding: 0; background: #2D58A8; color: #fff; border: none; border-radius: 10px; font-weight: 600; font-size: 14px; cursor: pointer; font-family: inherit; }
+  button:hover { background: #234588; }
+  button:disabled { background: #888780; cursor: wait; }
+  .error { background: #FCEBEB; color: #791F1F; padding: 10px 12px; border-radius: 8px; font-size: 13px; margin-top: 16px; display: none; }
+  .error.show { display: block; }
+  footer { margin-top: 24px; font-size: 11px; color: #888780; text-align: center; }
+</style>
+</head>
+<body>
+<div class="card">
+  <div class="brand-row">
+    <div class="brand-logo">DS</div>
+    <div>
+      <h1>Sales workspace</h1>
+      <p class="sub">DegreeSight · DS Sales Team</p>
+    </div>
+  </div>
+  <form id="login-form">
+    <label for="email">Email</label>
+    <input type="email" id="email" name="email" autocomplete="email" required autofocus placeholder="your.email@degreesight.com" />
+    <label for="password">Password</label>
+    <input type="password" id="password" name="password" autocomplete="current-password" required />
+    <button type="submit" id="submit-btn">Log in</button>
+    <div class="error" id="error">Invalid credentials</div>
+  </form>
+  <footer>Internal use only</footer>
+</div>
+<script>
+  const form = document.getElementById('login-form');
+  const btn = document.getElementById('submit-btn');
+  const err = document.getElementById('error');
+  form.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    err.classList.remove('show');
+    btn.disabled = true; btn.textContent = 'Checking...';
+    try {
+      const email = document.getElementById('email').value.trim().toLowerCase();
+      const password = document.getElementById('password').value;
+      const r = await fetch('/api/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email, password })
+      });
+      if (r.ok) {
+        const next = new URLSearchParams(location.search).get('next') || '/sales.html';
+        location.href = next;
+      } else {
+        const j = await r.json().catch(() => ({}));
+        err.textContent = j.error || 'Invalid credentials';
+        err.classList.add('show');
+      }
+    } catch (e2) {
+      err.textContent = 'Network error';
+      err.classList.add('show');
+    } finally {
+      btn.disabled = false; btn.textContent = 'Log in';
+    }
+  });
+</script>
+</body>
+</html>
