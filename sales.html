@@ -1,0 +1,512 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Sales workspace · DegreeSight</title>
+<style>
+  :root { color-scheme: light; }
+  * { box-sizing: border-box; }
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #F7F7F4; color: #1A1A1A; margin: 0; padding: 24px; }
+  .wrap { max-width: 1200px; margin: 0 auto; }
+  .card { background: #fff; border: 0.5px solid rgba(0,0,0,0.08); border-radius: 14px; padding: 16px 18px; }
+  .header { display: flex; align-items: center; justify-content: space-between; padding: 14px 18px; border-bottom: 0.5px solid rgba(0,0,0,0.08); background: #fff; border-radius: 14px 14px 0 0; }
+  .brand-row { display: flex; align-items: center; gap: 12px; }
+  .brand-logo { width: 32px; height: 32px; border-radius: 8px; background: #2D58A8; color: #fff; display: flex; align-items: center; justify-content: center; font-weight: 600; font-size: 13px; }
+  .brand-title { font-size: 14px; font-weight: 600; }
+  .brand-sub   { font-size: 12px; color: #5F5E5A; }
+  .header-right { display: flex; align-items: center; gap: 14px; font-size: 12px; color: #5F5E5A; }
+  .header-right select { font: inherit; padding: 4px 8px; border: 0.5px solid rgba(0,0,0,0.15); border-radius: 6px; background: #fff; }
+  .header-right .updated { display: flex; align-items: center; gap: 4px; }
+  .refresh-btn, .logout { background: transparent; border: 0.5px solid rgba(0,0,0,0.15); border-radius: 6px; padding: 4px 10px; font: inherit; cursor: pointer; color: #1A1A1A; text-decoration: none; }
+  .refresh-btn:hover, .logout:hover { background: #F7F7F4; }
+  .refresh-btn.spin svg { animation: spin 0.6s linear infinite; }
+  @keyframes spin { from { transform: rotate(0); } to { transform: rotate(360deg); } }
+
+  .tabs { display: flex; gap: 4px; padding: 8px 12px; border-bottom: 0.5px solid rgba(0,0,0,0.08); background: #fff; }
+  .tab  { padding: 8px 14px; font-size: 13px; color: #5F5E5A; cursor: pointer; border: 0.5px solid transparent; border-radius: 6px; }
+  .tab.active { background: #F7F7F4; border-color: rgba(0,0,0,0.08); color: #1A1A1A; font-weight: 500; }
+
+  .tab-panel { background: #fff; padding: 18px; border-radius: 0 0 14px 14px; }
+  .stat-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 18px; }
+  .stat { background: #F7F7F4; border-radius: 10px; padding: 14px 16px; }
+  .stat .lbl { font-size: 12px; color: #5F5E5A; }
+  .stat .val { font-size: 26px; font-weight: 500; margin-top: 4px; }
+
+  .panel { background: #fff; border: 0.5px solid rgba(0,0,0,0.08); border-radius: 10px; padding: 14px 16px; }
+  .panel-title { display: flex; align-items: center; gap: 6px; font-size: 13px; font-weight: 500; margin-bottom: 10px; }
+  .panel-sub   { font-size: 11px; color: #888780; margin-top: -8px; margin-bottom: 8px; }
+
+  .row { display: flex; justify-content: space-between; padding: 8px 0; border-bottom: 0.5px solid rgba(0,0,0,0.06); font-size: 13px; }
+  .row:last-child { border-bottom: none; }
+  .row .meta { color: #5F5E5A; font-size: 12px; }
+
+  .badge { font-size: 11px; padding: 2px 8px; border-radius: 10px; font-weight: 500; }
+  .badge.overdue, .badge.stale, .badge.negative { background: #FCEBEB; color: #791F1F; }
+  .badge.hot, .badge.positive { background: #E1F5EE; color: #0F6E56; }
+  .badge.at_risk { background: #FAEEDA; color: #854F0B; }
+  .badge.neutral { background: #F1EFE8; color: #444441; }
+
+  .progress { height: 10px; background: #F1EFE8; border-radius: 6px; overflow: hidden; }
+  .progress .bar { height: 100%; background: #1D9E75; }
+
+  .grid-2 { display: grid; grid-template-columns: 1.2fr 1fr; gap: 14px; }
+  .grid-3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; }
+
+  .error-banner { background: #FCEBEB; color: #791F1F; padding: 10px 14px; border-radius: 8px; margin-bottom: 12px; font-size: 13px; display: none; }
+  .error-banner.show { display: block; }
+
+  .loading { text-align: center; padding: 40px; color: #888780; font-size: 13px; }
+
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th { text-align: left; padding: 8px 6px; color: #5F5E5A; font-weight: 500; font-size: 12px; border-bottom: 0.5px solid rgba(0,0,0,0.08); }
+  td { padding: 8px 6px; border-bottom: 0.5px solid rgba(0,0,0,0.06); }
+
+  .transcript-card { padding: 10px 12px; border: 0.5px solid rgba(0,0,0,0.08); border-radius: 8px; margin-bottom: 8px; cursor: pointer; }
+  .transcript-card:hover { background: #F7F7F4; }
+  .transcript-title { font-size: 13px; font-weight: 500; }
+  .transcript-meta  { font-size: 11px; color: #888780; margin-top: 2px; }
+  .transcript-summary { font-size: 12px; color: #444; margin-top: 6px; line-height: 1.5; }
+
+  .modal-bg { position: fixed; inset: 0; background: rgba(0,0,0,0.45); display: none; align-items: center; justify-content: center; z-index: 50; }
+  .modal-bg.show { display: flex; }
+  .modal { background: #fff; border-radius: 14px; padding: 22px 26px; width: 90%; max-width: 720px; max-height: 80vh; overflow-y: auto; }
+  .modal h2 { font-size: 16px; margin: 0 0 4px; font-weight: 600; }
+  .modal .close { float: right; cursor: pointer; font-size: 18px; color: #888780; }
+  .quote { font-style: italic; color: #444; padding: 6px 12px; border-left: 3px solid #2D58A8; margin: 8px 0; font-size: 12px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <div class="header">
+    <div class="brand-row">
+      <div class="brand-logo">DS</div>
+      <div>
+        <div class="brand-title">Sales rep workspace</div>
+        <div class="brand-sub" id="rep-sub">Loading…</div>
+      </div>
+    </div>
+    <div class="header-right">
+      <select id="rep-select" style="display:none"></select>
+      <span class="updated"><span id="updated-label">—</span></span>
+      <button class="refresh-btn" id="refresh-btn" title="Refresh">
+        <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M14 8c0 3.3-2.7 6-6 6S2 11.3 2 8s2.7-6 6-6c1.5 0 2.8.5 3.8 1.4M14 2v3h-3"/></svg>
+      </button>
+      <a class="logout" href="/login.html" onclick="logout(event)">Log out</a>
+    </div>
+  </div>
+
+  <div class="tabs">
+    <div class="tab active" data-tab="today">Today</div>
+    <div class="tab" data-tab="pipeline">My pipeline</div>
+    <div class="tab" data-tab="conversations">Conversations</div>
+    <div class="tab" data-tab="goals">My goals</div>
+    <div class="tab" data-tab="recent">Recent</div>
+  </div>
+
+  <div class="tab-panel">
+    <div class="error-banner" id="error-banner"></div>
+
+    <!-- TODAY -->
+    <div data-panel="today">
+      <div class="stat-grid">
+        <div class="stat"><div class="lbl">Tasks due today</div><div class="val" id="s-tasks">—</div></div>
+        <div class="stat"><div class="lbl">Meetings this week</div><div class="val" id="s-meetings">—</div></div>
+        <div class="stat"><div class="lbl">Open pipeline</div><div class="val" id="s-open">—</div></div>
+        <div class="stat"><div class="lbl">Weighted forecast</div><div class="val" id="s-weighted">—</div></div>
+      </div>
+
+      <div class="grid-2">
+        <div class="panel">
+          <div class="panel-title">📋 Tasks for today</div>
+          <div id="tasks-list" class="loading">Loading…</div>
+        </div>
+        <div class="panel">
+          <div class="panel-title">⚠ Needs attention</div>
+          <div id="attention-list" class="loading">Loading…</div>
+        </div>
+      </div>
+
+      <div style="margin-top: 14px;">
+        <div class="panel">
+          <div class="panel-title">🏆 <span id="goal-quarter-name">Goal tracker</span></div>
+          <div id="goal-tracker" class="loading">Loading…</div>
+        </div>
+      </div>
+
+      <div style="margin-top: 14px;">
+        <div class="panel">
+          <div class="panel-title">🎙 Recent meeting insights</div>
+          <div class="panel-sub">Pulled from Confluence transcripts · click to analyze sentiment</div>
+          <div id="recent-meetings" class="loading">Loading…</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- PIPELINE -->
+    <div data-panel="pipeline" style="display:none">
+      <div class="grid-3" id="funnel-row"></div>
+      <div style="margin-top: 14px;" class="panel">
+        <div class="panel-title">My open deals</div>
+        <div id="open-deals-table" class="loading">Loading…</div>
+      </div>
+    </div>
+
+    <!-- CONVERSATIONS -->
+    <div data-panel="conversations" style="display:none">
+      <div class="panel">
+        <div class="panel-title">All meeting transcripts</div>
+        <div class="panel-sub">Click any to analyze with Claude (first time takes ~2s, then cached)</div>
+        <div id="all-transcripts" class="loading">Loading…</div>
+      </div>
+    </div>
+
+    <!-- GOALS -->
+    <div data-panel="goals" style="display:none">
+      <div class="grid-2">
+        <div class="panel">
+          <div class="panel-title">Quarter quota</div>
+          <div id="quarter-goal" class="loading">Loading…</div>
+        </div>
+        <div class="panel">
+          <div class="panel-title">Annual quota</div>
+          <div id="annual-goal" class="loading">Loading…</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- RECENT -->
+    <div data-panel="recent" style="display:none">
+      <div class="grid-2">
+        <div class="panel">
+          <div class="panel-title">Recent wins</div>
+          <div id="recent-won" class="loading">Loading…</div>
+        </div>
+        <div class="panel">
+          <div class="panel-title">Recent losses</div>
+          <div id="recent-lost" class="loading">Loading…</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Insight modal -->
+<div class="modal-bg" id="modal-bg" onclick="closeModal(event)">
+  <div class="modal" onclick="event.stopPropagation()">
+    <span class="close" onclick="closeModal()">×</span>
+    <h2 id="modal-title">Meeting insight</h2>
+    <div id="modal-body"></div>
+  </div>
+</div>
+
+<script>
+  const fmtMoney = v => v == null ? '—' : '$' + Math.round(v).toLocaleString();
+  const fmtMoneyK = v => v == null ? '—' : '$' + Math.round(v / 1000) + 'k';
+  const fmtPct   = v => v == null ? '—' : Math.round(v * 100) + '%';
+  const fmtDate  = iso => iso ? new Date(iso).toLocaleDateString() : '—';
+  const ago = iso => {
+    if (!iso) return '—';
+    const diff = (Date.now() - new Date(iso).getTime()) / 60000;
+    if (diff < 1) return 'just now';
+    if (diff < 60) return Math.round(diff) + ' min ago';
+    if (diff < 1440) return Math.round(diff / 60) + 'h ago';
+    return Math.round(diff / 1440) + 'd ago';
+  };
+
+  let me, salesData, lastFetch;
+
+  async function fetchMe() {
+    const r = await fetch('/api/me');
+    if (!r.ok) { location.href = '/login.html'; return; }
+    me = await r.json();
+    document.getElementById('rep-sub').textContent = me.email + ' · ' + me.role;
+    if (me.role === 'admin' || me.role === 'manager') {
+      // Show rep selector once we know reps
+    }
+  }
+
+  async function fetchData(ownerId) {
+    const url = ownerId ? `/api/sales-data?ownerId=${ownerId}` : '/api/sales-data';
+    const r = await fetch(url);
+    if (!r.ok) {
+      const j = await r.json().catch(() => ({}));
+      showError(j.error || ('Failed to load: ' + r.status));
+      return null;
+    }
+    return r.json();
+  }
+
+  async function fetchTranscripts(limit = 50) {
+    const r = await fetch(`/api/transcripts?limit=${limit}`);
+    if (!r.ok) return { results: [] };
+    return r.json();
+  }
+
+  function showError(msg) {
+    const b = document.getElementById('error-banner');
+    b.textContent = msg;
+    b.classList.add('show');
+    setTimeout(() => b.classList.remove('show'), 6000);
+  }
+
+  function renderRepSelect() {
+    if (!salesData?.available_reps) return;
+    const sel = document.getElementById('rep-select');
+    sel.innerHTML = salesData.available_reps.map(r =>
+      `<option value="${r.ownerId}" ${r.ownerId === salesData.rep.ownerId ? 'selected' : ''}>${r.name}</option>`
+    ).join('');
+    sel.style.display = '';
+    sel.onchange = async () => {
+      salesData = await fetchData(sel.value);
+      renderAll();
+    };
+  }
+
+  function renderToday() {
+    const d = salesData;
+    document.getElementById('s-tasks').textContent = d.today.tasks_due_today;
+    document.getElementById('s-meetings').textContent = d.today.meetings_this_week;
+    document.getElementById('s-open').textContent = fmtMoneyK(d.today.open_pipeline);
+    document.getElementById('s-weighted').textContent = fmtMoneyK(d.today.weighted_forecast);
+    document.getElementById('updated-label').textContent = 'Updated ' + ago(d.asOf);
+
+    // Tasks list
+    const tasksEl = document.getElementById('tasks-list');
+    if (!d.tasks_for_today.length) {
+      tasksEl.innerHTML = '<div class="row"><span style="color:#888780">No tasks due today 🎉</span></div>';
+    } else {
+      tasksEl.innerHTML = d.tasks_for_today.map(t => {
+        const isOverdue = t.due_label === 'overdue';
+        return `<div class="row">
+          <span>${isOverdue ? '<span style="color:#A32D2D;font-weight:500">!</span> ' : ''}${escapeHtml(t.subject)}</span>
+          <span class="meta">${isOverdue ? '<span class="badge overdue">overdue</span>' : t.due_label}</span>
+        </div>`;
+      }).join('');
+    }
+
+    // Needs attention
+    const attEl = document.getElementById('attention-list');
+    if (!d.needs_attention.length) {
+      attEl.innerHTML = '<div class="row"><span style="color:#888780">Nothing flagged 👍</span></div>';
+    } else {
+      attEl.innerHTML = d.needs_attention.map(a => {
+        const badge = a.flag === 'hot'
+          ? '<span class="badge hot">close imminent</span>'
+          : `<span class="badge stale">${a.days_stale}d stale</span>`;
+        return `<div class="row" style="flex-direction:column;align-items:stretch">
+          <div style="display:flex;justify-content:space-between">
+            <span><strong style="font-weight:500">${escapeHtml(a.dealname)}</strong> · ${a.stage}</span>
+            ${badge}
+          </div>
+          <div class="meta">${fmtMoneyK(a.amount)} · last activity ${fmtDate(a.last_activity_iso)}</div>
+        </div>`;
+      }).join('');
+    }
+
+    // Goal tracker (annual)
+    const g = d.goal;
+    const pct = Math.min(100, Math.round(g.percent_to_quota * 100));
+    document.getElementById('goal-quarter-name').textContent = `Goal tracker — ${d.quarter.name} · annual quota`;
+    document.getElementById('goal-tracker').innerHTML = `
+      <div style="display:flex;justify-content:space-between;font-size:12px;color:#5F5E5A;margin-bottom:8px">
+        <span>${fmtMoney(g.closed_ytd)} / ${fmtMoney(g.annual_quota)}</span>
+        <span>${pct}% to quota · gap ${fmtMoney(g.gap)}</span>
+      </div>
+      <div class="progress"><div class="bar" style="width:${pct}%"></div></div>
+      <div style="font-size:11px;color:#888780;margin-top:6px">Quarter ${d.quarter.name}: ${fmtMoney(d.quarter.closed)} won / ${fmtMoney(d.quarter.quota)} quota · ${d.quarter.days_left} days left</div>
+    `;
+  }
+
+  function renderPipeline() {
+    const d = salesData;
+    document.getElementById('funnel-row').innerHTML = d.pipeline.funnel.map(s => `
+      <div class="panel" style="padding:12px 14px">
+        <div style="font-size:11px;color:#5F5E5A">${s.stage}</div>
+        <div style="font-size:22px;font-weight:500;margin-top:2px">${s.count}</div>
+        <div style="font-size:12px;color:#5F5E5A">${fmtMoneyK(s.amount)}</div>
+      </div>
+    `).join('');
+
+    const t = document.getElementById('open-deals-table');
+    if (!d.pipeline.open_deals.length) {
+      t.innerHTML = '<div style="color:#888780">No open deals</div>';
+      return;
+    }
+    t.innerHTML = `<table>
+      <thead><tr><th>Deal</th><th>Stage</th><th>Amount</th><th>Weighted</th><th>Close date</th></tr></thead>
+      <tbody>${d.pipeline.open_deals.map(o => `
+        <tr>
+          <td>${escapeHtml(o.dealname)}</td>
+          <td>${o.stage}</td>
+          <td>${fmtMoney(o.amount)}</td>
+          <td>${fmtMoney(o.weighted)}</td>
+          <td>${fmtDate(o.close_date)}</td>
+        </tr>`).join('')}</tbody>
+    </table>`;
+  }
+
+  function renderGoals() {
+    const d = salesData;
+    const q = d.quarter;
+    const pctQ = q.quota > 0 ? Math.min(100, Math.round((q.closed / q.quota) * 100)) : 0;
+    document.getElementById('quarter-goal').innerHTML = `
+      <div style="font-size:13px;color:#5F5E5A;margin-bottom:6px">${q.name}</div>
+      <div style="display:flex;justify-content:space-between;font-size:12px;color:#5F5E5A;margin-bottom:6px">
+        <span>${fmtMoney(q.closed)} / ${fmtMoney(q.quota)}</span><span>${pctQ}%</span>
+      </div>
+      <div class="progress"><div class="bar" style="width:${pctQ}%"></div></div>
+      <div style="font-size:11px;color:#888780;margin-top:6px">${q.days_left} days left in quarter</div>
+    `;
+    const pct = Math.min(100, Math.round(d.goal.percent_to_quota * 100));
+    document.getElementById('annual-goal').innerHTML = `
+      <div style="font-size:13px;color:#5F5E5A;margin-bottom:6px">YTD</div>
+      <div style="display:flex;justify-content:space-between;font-size:12px;color:#5F5E5A;margin-bottom:6px">
+        <span>${fmtMoney(d.goal.closed_ytd)} / ${fmtMoney(d.goal.annual_quota)}</span><span>${pct}%</span>
+      </div>
+      <div class="progress"><div class="bar" style="width:${pct}%"></div></div>
+      <div style="font-size:11px;color:#888780;margin-top:6px">Gap to quota: ${fmtMoney(d.goal.gap)}</div>
+    `;
+  }
+
+  function renderRecent() {
+    const d = salesData;
+    const won = document.getElementById('recent-won');
+    won.innerHTML = d.recent.won.length
+      ? d.recent.won.map(w => `<div class="row"><span>${escapeHtml(w.dealname)}</span><span class="meta">${fmtMoney(w.amount)} · ${fmtDate(w.close_date)}</span></div>`).join('')
+      : '<div style="color:#888780">No recent wins</div>';
+    const lost = document.getElementById('recent-lost');
+    lost.innerHTML = d.recent.lost.length
+      ? d.recent.lost.map(l => `<div class="row" style="flex-direction:column;align-items:stretch"><div style="display:flex;justify-content:space-between"><span>${escapeHtml(l.dealname)}</span><span class="meta">${fmtMoney(l.amount)} · ${fmtDate(l.close_date)}</span></div>${l.reason ? `<div class="meta">${escapeHtml(l.reason)}</div>` : ''}</div>`).join('')
+      : '<div style="color:#888780">No recent losses</div>';
+  }
+
+  async function renderTranscripts(targetId, limit) {
+    const target = document.getElementById(targetId);
+    target.innerHTML = '<div class="loading">Loading…</div>';
+    const tr = await fetchTranscripts(limit);
+    if (!tr.results.length) {
+      target.innerHTML = '<div style="color:#888780;font-size:13px">No transcripts found in Confluence</div>';
+      return;
+    }
+    target.innerHTML = tr.results.map(t => {
+      const sentimentBadge = t.sentiment
+        ? `<span class="badge ${t.sentiment}">${t.sentiment.replace('_', ' ')}</span>`
+        : `<span class="badge neutral">not analyzed</span>`;
+      return `<div class="transcript-card" onclick="openInsight('${t.page_id}', this)">
+        <div style="display:flex;justify-content:space-between;align-items:center">
+          <div class="transcript-title">${escapeHtml(t.title)}</div>
+          ${sentimentBadge}
+        </div>
+        <div class="transcript-meta">${fmtDate(t.created_date)} · <a href="${t.url}" target="_blank" onclick="event.stopPropagation()" style="color:#5F5E5A">view in Confluence ↗</a></div>
+        ${t.summary ? `<div class="transcript-summary">${escapeHtml(t.summary)}</div>` : ''}
+      </div>`;
+    }).join('');
+  }
+
+  async function openInsight(pageId, cardEl) {
+    const modal = document.getElementById('modal-bg');
+    document.getElementById('modal-title').textContent = 'Loading insight…';
+    document.getElementById('modal-body').innerHTML = '<div class="loading">Analyzing transcript with Claude…</div>';
+    modal.classList.add('show');
+    try {
+      const r = await fetch('/api/transcript-insight', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ confluence_page_id: pageId })
+      });
+      if (!r.ok) {
+        const j = await r.json().catch(() => ({}));
+        document.getElementById('modal-body').innerHTML = `<div style="color:#791F1F">Error: ${j.error || r.status} ${j.detail ? '· ' + j.detail : ''}</div>`;
+        return;
+      }
+      const ins = await r.json();
+      document.getElementById('modal-title').textContent = ins.meeting_title || 'Meeting insight';
+      document.getElementById('modal-body').innerHTML = renderInsight(ins);
+    } catch (e) {
+      document.getElementById('modal-body').innerHTML = `<div style="color:#791F1F">Error: ${e.message}</div>`;
+    }
+  }
+
+  function renderInsight(ins) {
+    const sBadge = ins.sentiment ? `<span class="badge ${ins.sentiment}">${ins.sentiment.replace('_', ' ')}</span>` : '';
+    const score = ins.sentiment_score != null ? `<span style="font-size:11px;color:#888780;margin-left:8px">score ${(+ins.sentiment_score).toFixed(2)}</span>` : '';
+    const kws = (ins.keywords || []).map(k => `<span class="badge neutral" style="margin-right:4px">${escapeHtml(k)}</span>`).join('');
+    const risks = (ins.risk_flags || []).map(r => `<span class="badge stale" style="margin-right:4px">${escapeHtml(r)}</span>`).join('');
+    const actions = (ins.action_items || []).map(a => `<div class="row"><span><strong style="font-weight:500">${escapeHtml(a.owner || '?')}</strong>: ${escapeHtml(a.task || '')}</span><span class="meta">${a.due || 'no due'}</span></div>`).join('');
+    const quotes = (ins.key_quotes || []).map(q => `<div class="quote">"${escapeHtml(q.quote || '')}" <span style="font-style:normal;color:#888780">— ${escapeHtml(q.speaker || '?')} · ${escapeHtml(q.why_it_matters || '')}</span></div>`).join('');
+    return `
+      <div style="margin-bottom:12px">${sBadge}${score}</div>
+      <div style="font-size:13px;color:#444;margin-bottom:12px;line-height:1.5">${escapeHtml(ins.summary || '')}</div>
+      ${ins.sentiment_reason ? `<div style="font-size:12px;color:#5F5E5A;margin-bottom:12px"><strong style="font-weight:500">Why:</strong> ${escapeHtml(ins.sentiment_reason)}</div>` : ''}
+      ${ins.next_step_committed ? `<div style="font-size:13px;margin-bottom:12px"><strong style="font-weight:500">Next step:</strong> ${escapeHtml(ins.next_step_committed)}</div>` : ''}
+      ${kws ? `<div style="margin-bottom:12px">${kws}</div>` : ''}
+      ${risks ? `<div style="margin-bottom:12px"><div style="font-size:12px;color:#5F5E5A;margin-bottom:4px">Risk flags</div>${risks}</div>` : ''}
+      ${actions ? `<div style="margin-bottom:12px"><div style="font-size:12px;color:#5F5E5A;margin-bottom:4px">Action items</div>${actions}</div>` : ''}
+      ${quotes ? `<div style="margin-bottom:12px"><div style="font-size:12px;color:#5F5E5A;margin-bottom:4px">Key quotes</div>${quotes}</div>` : ''}
+      ${ins.source_url ? `<div style="margin-top:14px"><a href="${ins.source_url}" target="_blank" style="font-size:12px;color:#2D58A8">Open transcript in Confluence ↗</a></div>` : ''}
+    `;
+  }
+
+  function closeModal(e) {
+    document.getElementById('modal-bg').classList.remove('show');
+  }
+
+  function escapeHtml(s) {
+    if (s == null) return '';
+    return String(s).replace(/[&<>"']/g, c => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c]));
+  }
+
+  function renderAll() {
+    if (!salesData) return;
+    document.getElementById('rep-sub').textContent = salesData.rep.name + ' · ' + salesData.rep.email;
+    renderRepSelect();
+    renderToday();
+    renderPipeline();
+    renderGoals();
+    renderRecent();
+    renderTranscripts('recent-meetings', 5);
+  }
+
+  // Tabs
+  document.querySelectorAll('.tab').forEach(t => {
+    t.onclick = () => {
+      document.querySelectorAll('.tab').forEach(x => x.classList.remove('active'));
+      t.classList.add('active');
+      const target = t.dataset.tab;
+      document.querySelectorAll('[data-panel]').forEach(p => {
+        p.style.display = p.dataset.panel === target ? '' : 'none';
+      });
+      if (target === 'conversations') renderTranscripts('all-transcripts', 50);
+    };
+  });
+
+  // Refresh
+  document.getElementById('refresh-btn').onclick = async () => {
+    const btn = document.getElementById('refresh-btn');
+    btn.classList.add('spin');
+    salesData = await fetchData(salesData?.rep?.ownerId);
+    renderAll();
+    btn.classList.remove('spin');
+  };
+
+  // Auto-refresh "updated" label
+  setInterval(() => {
+    if (salesData) document.getElementById('updated-label').textContent = 'Updated ' + ago(salesData.asOf);
+  }, 30000);
+
+  async function logout(e) {
+    e.preventDefault();
+    await fetch('/api/logout', { method: 'POST' }).catch(() => {});
+    location.href = '/login.html';
+  }
+
+  (async function init() {
+    await fetchMe();
+    salesData = await fetchData();
+    if (salesData) renderAll();
+  })();
+</script>
+</body>
+</html>
