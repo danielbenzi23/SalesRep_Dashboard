@@ -338,17 +338,32 @@ export default async function handler(req, res) {
     .map(d => {
       const created = d.createdate ? new Date(d.createdate) : null;
       const closeAt = d.closedate ? new Date(d.closedate) : null;
+      const lastTouch = d.notes_last_contacted || d.notes_last_updated || d.hs_lastmodifieddate;
+      const daysSinceTouch = lastTouch ? daysBetween(new Date(lastTouch), now) : null;
+      let engagement;
+      if (daysSinceTouch == null) engagement = 'unknown';
+      else if (daysSinceTouch <= 14) engagement = 'active';
+      else if (daysSinceTouch <= 30) engagement = 'cold';
+      else engagement = 'stale';
+      const baseProb = STAGE_PROBABILITY[d.dealstage] ?? 0;
+      const engMult = engagement === 'active' ? 1.0
+                     : engagement === 'cold'  ? 0.7
+                     : engagement === 'stale' ? 0.4
+                     : 0.5;
       return {
         dealname: d.dealname || '(no name)',
         stage: STAGE_NAMES[d.dealstage] || d.dealstage,
         stage_id: d.dealstage,
         amount: parseFloat(d.amount) || 0,
-        probability: STAGE_PROBABILITY[d.dealstage] ?? 0,
-        weighted: (parseFloat(d.amount) || 0) * (STAGE_PROBABILITY[d.dealstage] ?? 0),
+        probability: baseProb,
+        close_likelihood: baseProb * engMult,
+        weighted: (parseFloat(d.amount) || 0) * baseProb,
         create_date: d.createdate || null,
         close_date: d.closedate || null,
         last_modified: d.hs_lastmodifieddate || null,
-        last_activity: d.notes_last_contacted || d.notes_last_updated || d.hs_lastmodifieddate || null,
+        last_activity: lastTouch || null,
+        days_since_activity: daysSinceTouch,
+        engagement: engagement,
         age_days:  created ? daysBetween(created, now) : null,
         days_to_close: closeAt ? daysBetween(now, closeAt) : null
       };
@@ -400,14 +415,29 @@ export default async function handler(req, res) {
     avg_acv: avgAcv
   };
 
-  // Funnel by stage
+  // Funnel by stage (with engagement %)
   const funnelOrder = ['56188255', '56188256', '56188257', '1301242997', '85090957'];
   const funnel = funnelOrder.map(sid => {
     const deals = openDeals.filter(d => d.dealstage === sid);
+    const activeDeals = deals.filter(d => {
+      const lastTouch = d.notes_last_contacted || d.notes_last_updated || d.hs_lastmodifieddate;
+      if (!lastTouch) return false;
+      return daysBetween(new Date(lastTouch), now) <= 14;
+    });
+    const totalAmount = deals.reduce((s, d) => s + (parseFloat(d.amount) || 0), 0);
+    const baseProb = STAGE_PROBABILITY[sid] ?? 0;
+    const engagedPct = deals.length > 0 ? activeDeals.length / deals.length : 0;
+    // Engagement-adjusted close probability: base × (0.4..1.0) by engagement
+    const engagementMultiplier = 0.4 + 0.6 * engagedPct;
     return {
       stage: STAGE_NAMES[sid],
+      stage_id: sid,
       count: deals.length,
-      amount: deals.reduce((s, d) => s + (parseFloat(d.amount) || 0), 0)
+      amount: totalAmount,
+      active_count: activeDeals.length,
+      engaged_pct: engagedPct,
+      base_probability: baseProb,
+      close_likelihood: baseProb * engagementMultiplier
     };
   });
 
