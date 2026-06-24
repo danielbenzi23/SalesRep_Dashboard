@@ -148,6 +148,7 @@ export default async function handler(req, res) {
     meetingsThisWeekResp,
     recentWonResp,
     recentLostResp,
+    lostYtdResp,
     // Activity counts (rolling 7d)
     callsWeek,
     emailsWeek,
@@ -171,14 +172,14 @@ export default async function handler(req, res) {
       pipelineFilter,
       ownerFilter,
       { propertyName: 'dealstage', operator: 'NOT_IN', values: [...WON_STAGE_IDS, ...LOST_STAGE_IDS] }
-    ], ['dealname', 'amount', 'dealstage', 'pipeline', 'hubspot_owner_id', 'notes_last_contacted', 'notes_last_updated', 'hs_lastmodifieddate', 'closedate'], [{ propertyName: 'hs_lastmodifieddate', direction: 'DESCENDING' }], 10),
+    ], ['dealname', 'amount', 'dealstage', 'pipeline', 'hubspot_owner_id', 'notes_last_contacted', 'notes_last_updated', 'hs_lastmodifieddate', 'closedate', 'createdate'], [{ propertyName: 'hs_lastmodifieddate', direction: 'DESCENDING' }], 10),
 
-    // Closed-won YTD
+    // Closed-won YTD (with createdate for cycle time)
     fetchAll(hsToken, 'deals', [
       pipelineFilter, ownerFilter,
       { propertyName: 'dealstage', operator: 'IN', values: WON_STAGE_IDS },
       { propertyName: 'closedate', operator: 'GTE', value: yStart.toISOString() }
-    ], ['dealname', 'amount', 'closedate'], null, 10),
+    ], ['dealname', 'amount', 'closedate', 'createdate', 'hs_arr', 'hs_acv'], null, 10),
 
     // Closed-won this quarter
     fetchAll(hsToken, 'deals', [
@@ -215,6 +216,13 @@ export default async function handler(req, res) {
       { propertyName: 'dealstage', operator: 'IN', values: LOST_STAGE_IDS }
     ], ['dealname', 'amount', 'closedate', 'closed_lost_reason'],
       [{ propertyName: 'closedate', direction: 'DESCENDING' }], 1),
+
+    // All lost YTD (for win rate)
+    fetchAll(hsToken, 'deals', [
+      pipelineFilter, ownerFilter,
+      { propertyName: 'dealstage', operator: 'IN', values: LOST_STAGE_IDS },
+      { propertyName: 'closedate', operator: 'GTE', value: yStart.toISOString() }
+    ], ['amount', 'closedate'], null, 10),
 
     // ---- Activity counts (last 7 days) ----
     countEng('calls',    'hs_timestamp',           sevenDaysAgo.toISOString(), now.toISOString()),
@@ -327,18 +335,70 @@ export default async function handler(req, res) {
 
   // Open deals table (for My pipeline tab)
   const openDealsTable = openDeals
-    .map(d => ({
-      dealname: d.dealname || '(no name)',
-      stage: STAGE_NAMES[d.dealstage] || d.dealstage,
-      stage_id: d.dealstage,
-      amount: parseFloat(d.amount) || 0,
-      probability: STAGE_PROBABILITY[d.dealstage] ?? 0,
-      weighted: (parseFloat(d.amount) || 0) * (STAGE_PROBABILITY[d.dealstage] ?? 0),
-      close_date: d.closedate || null,
-      last_modified: d.hs_lastmodifieddate || null,
-      last_activity: d.notes_last_contacted || d.notes_last_updated || d.hs_lastmodifieddate || null
-    }))
+    .map(d => {
+      const created = d.createdate ? new Date(d.createdate) : null;
+      const closeAt = d.closedate ? new Date(d.closedate) : null;
+      return {
+        dealname: d.dealname || '(no name)',
+        stage: STAGE_NAMES[d.dealstage] || d.dealstage,
+        stage_id: d.dealstage,
+        amount: parseFloat(d.amount) || 0,
+        probability: STAGE_PROBABILITY[d.dealstage] ?? 0,
+        weighted: (parseFloat(d.amount) || 0) * (STAGE_PROBABILITY[d.dealstage] ?? 0),
+        create_date: d.createdate || null,
+        close_date: d.closedate || null,
+        last_modified: d.hs_lastmodifieddate || null,
+        last_activity: d.notes_last_contacted || d.notes_last_updated || d.hs_lastmodifieddate || null,
+        age_days:  created ? daysBetween(created, now) : null,
+        days_to_close: closeAt ? daysBetween(now, closeAt) : null
+      };
+    })
     .sort((a, b) => b.amount - a.amount);
+
+  // ---- Pipeline metrics (YTD) ----
+  const wonYtdArr = wonYtdResp.map(d => d.properties);
+  const lostYtdArr = lostYtdResp.map(d => d.properties);
+
+  const wonCount = wonYtdArr.length;
+  const lostCount = lostYtdArr.length;
+  const totalClosed = wonCount + lostCount;
+  const winRate = totalClosed > 0 ? wonCount / totalClosed : 0;
+
+  const wonAmounts = wonYtdArr.map(d => parseFloat(d.amount) || 0).filter(v => v > 0);
+  const avgDealSize = wonAmounts.length ? wonAmounts.reduce((s, v) => s + v, 0) / wonAmounts.length : 0;
+  const sortedWon = wonAmounts.slice().sort((a, b) => a - b);
+  const medianDealSize = sortedWon.length
+    ? (sortedWon.length % 2 === 0
+        ? (sortedWon[sortedWon.length / 2 - 1] + sortedWon[sortedWon.length / 2]) / 2
+        : sortedWon[Math.floor(sortedWon.length / 2)])
+    : 0;
+
+  // ACV / FYCV: prefer hs_arr or hs_acv if populated, else fall back to amount
+  const wonAcvs = wonYtdArr
+    .map(d => parseFloat(d.hs_arr || d.hs_acv || d.amount) || 0)
+    .filter(v => v > 0);
+  const avgAcv = wonAcvs.length ? wonAcvs.reduce((s, v) => s + v, 0) / wonAcvs.length : 0;
+
+  // Sales cycle: closedate - createdate for won deals
+  const cycleDaysList = wonYtdArr.map(d => {
+    if (!d.createdate || !d.closedate) return null;
+    const created = new Date(d.createdate);
+    const closed = new Date(d.closedate);
+    return Math.max(0, Math.round((closed - created) / 86400000));
+  }).filter(v => v != null);
+  const avgCycleDays = cycleDaysList.length
+    ? Math.round(cycleDaysList.reduce((s, v) => s + v, 0) / cycleDaysList.length)
+    : 0;
+
+  const pipelineMetrics = {
+    win_rate: winRate,
+    won_count: wonCount,
+    lost_count: lostCount,
+    avg_cycle_days: avgCycleDays,
+    avg_deal_size: avgDealSize,
+    median_deal_size: medianDealSize,
+    avg_acv: avgAcv
+  };
 
   // Funnel by stage
   const funnelOrder = ['56188255', '56188256', '56188257', '1301242997', '85090957'];
@@ -456,7 +516,7 @@ export default async function handler(req, res) {
       email_performance: emailPerformance,
       recent_feed: recentActivityFeed
     },
-    pipeline: { funnel, open_deals: openDealsTable },
+    pipeline: { funnel, open_deals: openDealsTable, metrics: pipelineMetrics },
     recent: { won: recentWon, lost: recentLost },
     // Available reps for admin/manager dropdown
     available_reps: (user.role === 'admin' || user.role === 'manager')
