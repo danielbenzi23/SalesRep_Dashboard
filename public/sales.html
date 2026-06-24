@@ -422,30 +422,38 @@
       return;
     }
     target.innerHTML = tr.results.map(t => {
-      const sentimentBadge = t.sentiment
-        ? `<span class="badge ${t.sentiment}">${t.sentiment.replace('_', ' ')}</span>`
-        : `<span class="badge neutral">not analyzed</span>`;
+      let badge;
+      if (t.sentiment) {
+        // analyzed with sentiment from label
+        badge = `<span class="badge ${t.sentiment}">${t.sentiment.replace('_', ' ')}</span>`;
+      } else if (t.has_insight) {
+        // analyzed but no sentiment label (old insights)
+        badge = `<span class="badge positive">analyzed</span>`;
+      } else {
+        badge = `<span class="badge neutral">not analyzed</span>`;
+      }
       return `<div class="transcript-card" onclick="openInsight('${t.page_id}', this)">
         <div style="display:flex;justify-content:space-between;align-items:center">
           <div class="transcript-title">${escapeHtml(t.title)}</div>
-          ${sentimentBadge}
+          ${badge}
         </div>
         <div class="transcript-meta">${fmtDate(t.created_date)} · <a href="${t.url}" target="_blank" onclick="event.stopPropagation()" style="color:#5F5E5A">view in Confluence ↗</a></div>
-        ${t.summary ? `<div class="transcript-summary">${escapeHtml(t.summary)}</div>` : ''}
       </div>`;
     }).join('');
   }
 
-  async function openInsight(pageId, cardEl) {
+  async function openInsight(pageId, cardEl, force = false) {
     const modal = document.getElementById('modal-bg');
     document.getElementById('modal-title').textContent = 'Loading insight…';
-    document.getElementById('modal-body').innerHTML = '<div class="loading">Analyzing transcript with Claude…</div>';
+    document.getElementById('modal-body').innerHTML = force
+      ? '<div class="loading">Re-analyzing with Claude…</div>'
+      : '<div class="loading">Loading… (Claude runs if not yet cached, ~2s)</div>';
     modal.classList.add('show');
     try {
       const r = await fetch('/api/transcript-insight', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ confluence_page_id: pageId })
+        body: JSON.stringify({ confluence_page_id: pageId, force })
       });
       if (!r.ok) {
         const j = await r.json().catch(() => ({}));
@@ -453,11 +461,22 @@
         return;
       }
       const ins = await r.json();
+      window._currentInsightId = pageId;
       document.getElementById('modal-title').textContent = ins.meeting_title || 'Meeting insight';
       document.getElementById('modal-body').innerHTML = renderInsight(ins);
+      // After successful new analysis, refresh the transcript list to update badges
+      if (!ins._cached) {
+        const activeTab = document.querySelector('.tab.active')?.dataset.tab;
+        if (activeTab === 'conversations') renderTranscripts('all-transcripts', 50);
+        if (activeTab === 'today') renderTranscripts('recent-meetings', 5);
+      }
     } catch (e) {
       document.getElementById('modal-body').innerHTML = `<div style="color:#791F1F">Error: ${e.message}</div>`;
     }
+  }
+
+  function reanalyzeCurrent() {
+    if (window._currentInsightId) openInsight(window._currentInsightId, null, true);
   }
 
   function renderInsight(ins) {
@@ -467,8 +486,11 @@
     const risks = (ins.risk_flags || []).map(r => `<span class="badge stale" style="margin-right:4px">${escapeHtml(r)}</span>`).join('');
     const actions = (ins.action_items || []).map(a => `<div class="row"><span><strong style="font-weight:500">${escapeHtml(a.owner || '?')}</strong>: ${escapeHtml(a.task || '')}</span><span class="meta">${a.due || 'no due'}</span></div>`).join('');
     const quotes = (ins.key_quotes || []).map(q => `<div class="quote">"${escapeHtml(q.quote || '')}" <span style="font-style:normal;color:#888780">— ${escapeHtml(q.speaker || '?')} · ${escapeHtml(q.why_it_matters || '')}</span></div>`).join('');
+    const cachedTag = ins._cached
+      ? `<span style="font-size:11px;color:#888780;margin-left:8px">📌 from cache · <a href="#" onclick="reanalyzeCurrent();return false" style="color:#2D58A8">re-analyze</a></span>`
+      : `<span style="font-size:11px;color:#0F6E56;margin-left:8px">✓ fresh analysis saved to Confluence</span>`;
     return `
-      <div style="margin-bottom:12px">${sBadge}${score}</div>
+      <div style="margin-bottom:12px">${sBadge}${score}${cachedTag}</div>
       <div style="font-size:13px;color:#444;margin-bottom:12px;line-height:1.5">${escapeHtml(ins.summary || '')}</div>
       ${ins.sentiment_reason ? `<div style="font-size:12px;color:#5F5E5A;margin-bottom:12px"><strong style="font-weight:500">Why:</strong> ${escapeHtml(ins.sentiment_reason)}</div>` : ''}
       ${ins.next_step_committed ? `<div style="font-size:13px;margin-bottom:12px"><strong style="font-weight:500">Next step:</strong> ${escapeHtml(ins.next_step_committed)}</div>` : ''}
