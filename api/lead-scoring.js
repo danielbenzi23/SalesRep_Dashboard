@@ -49,42 +49,61 @@ export default async function handler(req, res) {
   const limit = Math.min(parseInt(url.searchParams.get('limit') || '100', 10), 200);
   const compareDays = Math.min(Math.max(parseInt(url.searchParams.get('days') || '7', 10), 1), 90);
 
-  // 1) Top N contacts by hubspotscore
+  // Which score property? DegreeSight uses a custom property "all_engagement_lead_score"
+  // (HubSpot's new Lead Scoring app, "All Engagement Lead Score").
+  // Allow override via ?property=X or env HUBSPOT_LEAD_SCORE_PROPERTY.
+  // Other options if needed:
+  //   - hs_predictivecontactscore_v2 (HubSpot AI "Likelihood to close")
+  //   - hubspotscore                 (legacy manual scoring)
+  const SCORE_PROP = url.searchParams.get('property')
+    || process.env.HUBSPOT_LEAD_SCORE_PROPERTY
+    || 'all_engagement_lead_score';
+
+  // Thresholds for tier classification (matches HubSpot Lead Scoring app's "Low/Medium/High")
+  function tierFromScore(s) {
+    if (s == null) return null;
+    if (s <= 0)    return 'low';
+    if (s < 300)   return 'low';
+    if (s < 600)   return 'medium';
+    if (s < 900)   return 'high';
+    return 'very_high';
+  }
+
+  // 1) Top N contacts by the chosen score property
   let searchRes;
   try {
     searchRes = await hsApi(hsToken, 'POST', '/crm/v3/objects/contacts/search', {
       filterGroups: [{ filters: [
-        { propertyName: 'hubspotscore', operator: 'HAS_PROPERTY' }
+        { propertyName: SCORE_PROP, operator: 'HAS_PROPERTY' }
       ]}],
-      sorts: [{ propertyName: 'hubspotscore', direction: 'DESCENDING' }],
+      sorts: [{ propertyName: SCORE_PROP, direction: 'DESCENDING' }],
       properties: [
-        'firstname', 'lastname', 'email', 'company', 'hubspotscore',
+        'firstname', 'lastname', 'email', 'company', SCORE_PROP,
         'lifecyclestage', 'jobtitle', 'hubspot_owner_id', 'hs_lead_status',
         'lastmodifieddate', 'notes_last_contacted', 'createdate'
       ],
       limit
     });
   } catch (e) {
-    return res.status(502).json({ error: 'hubspot_search_failed', detail: e.message });
+    return res.status(502).json({ error: 'hubspot_search_failed', detail: e.message, score_property: SCORE_PROP });
   }
 
   const top = searchRes.results || [];
   const ids = top.map(c => c.id);
 
-  // 2) Batch read with property history for hubspotscore
+  // 2) Batch read with property history for the chosen score property
   let withHistory = {};
   if (ids.length > 0) {
     try {
-      // batch/read supports max 100 ids — paginate if needed
       const chunks = [];
       for (let i = 0; i < ids.length; i += 100) chunks.push(ids.slice(i, i + 100));
       for (const chunk of chunks) {
         const batchRes = await hsApi(hsToken, 'POST', '/crm/v3/objects/contacts/batch/read', {
-          propertiesWithHistory: ['hubspotscore'],
+          propertiesWithHistory: [SCORE_PROP],
           inputs: chunk.map(id => ({ id }))
         });
         for (const r of (batchRes.results || [])) {
-          withHistory[r.id] = r.propertiesWithHistory?.hubspotscore || [];
+          withHistory[r.id] = r.propertiesWithHistory?.[SCORE_PROP] || [];
         }
       }
     } catch (e) {
@@ -96,7 +115,7 @@ export default async function handler(req, res) {
   // 3) Compute current rank + score-at-comparison-date
   const compareMs = Date.now() - compareDays * 86400000;
   const scored = top.map((c, idx) => {
-    const current = parseFloat(c.properties.hubspotscore || '0') || 0;
+    const current = parseFloat(c.properties[SCORE_PROP] || '0') || 0;
     const history = withHistory[c.id] || [];
     const past = scoreAtDate(history, compareMs);
     const delta = past != null ? current - past : null;
@@ -115,6 +134,7 @@ export default async function handler(req, res) {
       lifecyclestage: c.properties.lifecyclestage || '',
       jobtitle: c.properties.jobtitle || '',
       lead_status: c.properties.hs_lead_status || '',
+      tier: tierFromScore(current),
       owner_id: c.properties.hubspot_owner_id || null,
       owner: OWNER_ID_TO_NAME[c.properties.hubspot_owner_id] || null,
       last_activity: c.properties.notes_last_contacted || c.properties.lastmodifieddate || null,
