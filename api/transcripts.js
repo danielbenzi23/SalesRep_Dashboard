@@ -24,13 +24,23 @@ export default async function handler(req, res) {
 
   return res.status(200).json({
     count: pages.length,
-    results: pages.map(p => ({
-      page_id:        p.page_id,
-      title:          p.title,
-      created_date:   p.created_date,
-      last_modified:  p.last_modified,
-      url:            p.url,
-      labels:         p.labels || []
-    }))
+    results: pages.map(p => {
+      const labels = p.labels || [];
+      const has_insight = labels.includes('claude-analyzed');
+      const sentimentLabel = labels.find(l => l.startsWith('sentiment-'));
+      const sentiment = sentimentLabel
+        ? sentimentLabel.replace(/^sentiment-/, '').replace(/-/g, '_')
+        : null;
+      return {
+        page_id:        p.page_id,
+        title:          p.title,
+        created_date:   p.created_date,
+        last_modified:  p.last_modified,
+        url:            p.url,
+        labels,
+        has_insight,
+        sentiment
+      };
+    })
   });
 }
