@@ -155,9 +155,17 @@
 
     <!-- PIPELINE -->
     <div data-panel="pipeline" style="display:none">
+      <div class="panel" style="margin-bottom:14px">
+        <div class="panel-title">📊 Pipeline metrics (YTD)</div>
+        <div id="pipeline-metrics" style="display:grid;grid-template-columns:repeat(5,1fr);gap:10px;margin-top:8px"></div>
+      </div>
+
       <div class="grid-3" id="funnel-row"></div>
+      <div id="filter-banner" style="display:none;margin-top:12px;padding:8px 14px;background:#E6F1FB;border-radius:8px;font-size:12px;color:#0C447C">
+        Showing only <strong id="filter-label"></strong> deals · <a href="#" onclick="clearStageFilter();return false" style="color:#0C447C;text-decoration:underline">clear filter</a>
+      </div>
       <div style="margin-top: 14px;" class="panel">
-        <div class="panel-title">My open deals</div>
+        <div class="panel-title" id="open-deals-title">My open deals</div>
         <div id="open-deals-table" class="loading">Loading…</div>
       </div>
     </div>
@@ -350,33 +358,106 @@
     `;
   }
 
+  let selectedStageId = null;
+
+  function selectStage(stageId, stageName) {
+    selectedStageId = selectedStageId === stageId ? null : stageId;
+    renderPipeline();
+  }
+  function clearStageFilter() {
+    selectedStageId = null;
+    renderPipeline();
+  }
+  window.clearStageFilter = clearStageFilter;
+
+  function fmtRelativeDays(days, suffix) {
+    if (days == null) return '—';
+    if (days === 0) return 'today';
+    if (days > 0) return `${days}d ${suffix || 'old'}`;
+    return `${Math.abs(days)}d overdue`;
+  }
+  function fmtDaysToClose(days) {
+    if (days == null) return '—';
+    if (days === 0) return 'today';
+    if (days > 0) return `in ${days}d`;
+    return `${Math.abs(days)}d overdue`;
+  }
+
+  function renderPipelineMetrics() {
+    const m = salesData.pipeline?.metrics || {};
+    const tiles = [
+      { lbl: 'Win rate',         val: fmtPct(m.win_rate),         sub: `${m.won_count || 0}W / ${m.lost_count || 0}L (YTD)` },
+      { lbl: 'Avg sales cycle',  val: m.avg_cycle_days ? `${m.avg_cycle_days}d` : '—', sub: 'create → close (won)' },
+      { lbl: 'Avg deal size',    val: fmtMoneyK(m.avg_deal_size), sub: 'mean of YTD won' },
+      { lbl: 'Median deal size', val: fmtMoneyK(m.median_deal_size), sub: 'median of YTD won' },
+      { lbl: 'ACV',              val: fmtMoneyK(m.avg_acv),       sub: 'hs_arr/hs_acv or amount' }
+    ];
+    document.getElementById('pipeline-metrics').innerHTML = tiles.map(t => `
+      <div class="stat" style="padding:12px">
+        <div class="lbl">${t.lbl}</div>
+        <div class="val" style="font-size:22px">${t.val}</div>
+        <div style="font-size:11px;color:#888780;margin-top:2px">${t.sub}</div>
+      </div>
+    `).join('');
+  }
+
   function renderPipeline() {
     const d = salesData;
-    document.getElementById('funnel-row').innerHTML = d.pipeline.funnel.map(s => `
-      <div class="panel" style="padding:12px 14px">
+
+    renderPipelineMetrics();
+
+    // Funnel cards — clickable, selected one is highlighted
+    document.getElementById('funnel-row').innerHTML = d.pipeline.funnel.map(s => {
+      const isSel = selectedStageId === s.stage_id;
+      const border = isSel ? 'border:2px solid #2D58A8' : 'border:0.5px solid rgba(0,0,0,0.08)';
+      const bg = isSel ? 'background:#E6F1FB' : 'background:#fff';
+      return `<div class="panel" style="padding:12px 14px;cursor:pointer;${border};${bg};border-radius:10px"
+        onclick="selectStage('${s.stage_id}', '${escapeHtml(s.stage)}')">
         <div style="font-size:11px;color:#5F5E5A">${s.stage}</div>
         <div style="font-size:22px;font-weight:500;margin-top:2px">${s.count}</div>
         <div style="font-size:12px;color:#5F5E5A">${fmtMoneyK(s.amount)}</div>
-      </div>
-    `).join('');
+      </div>`;
+    }).join('');
+
+    // Filter banner
+    const selStage = d.pipeline.funnel.find(f => f.stage_id === selectedStageId);
+    if (selStage) {
+      document.getElementById('filter-banner').style.display = '';
+      document.getElementById('filter-label').textContent = selStage.stage;
+    } else {
+      document.getElementById('filter-banner').style.display = 'none';
+    }
+
+    // Filtered deals
+    let deals = d.pipeline.open_deals;
+    if (selectedStageId) deals = deals.filter(o => o.stage_id === selectedStageId);
+
+    document.getElementById('open-deals-title').textContent =
+      selStage ? `My open deals · ${selStage.stage} (${deals.length})` : `My open deals (${deals.length})`;
 
     const t = document.getElementById('open-deals-table');
-    if (!d.pipeline.open_deals.length) {
-      t.innerHTML = '<div style="color:#888780">No open deals</div>';
+    if (!deals.length) {
+      t.innerHTML = '<div style="color:#888780">No open deals' + (selStage ? ` in ${selStage.stage}` : '') + '</div>';
       return;
     }
     t.innerHTML = `<table>
-      <thead><tr><th>Deal</th><th>Stage</th><th>Amount</th><th>Weighted</th><th>Close date</th></tr></thead>
-      <tbody>${d.pipeline.open_deals.map(o => `
+      <thead><tr>
+        <th>Deal</th><th>Stage</th><th style="text-align:right">Amount</th><th style="text-align:right">Weighted</th>
+        <th>Created</th><th>Close date</th><th>Days to close</th>
+      </tr></thead>
+      <tbody>${deals.map(o => `
         <tr>
           <td>${escapeHtml(o.dealname)}</td>
           <td>${o.stage}</td>
-          <td>${fmtMoney(o.amount)}</td>
-          <td>${fmtMoney(o.weighted)}</td>
+          <td style="text-align:right">${fmtMoney(o.amount)}</td>
+          <td style="text-align:right">${fmtMoney(o.weighted)}</td>
+          <td><span class="meta">${fmtRelativeDays(o.age_days, 'old')}</span></td>
           <td>${fmtDate(o.close_date)}</td>
+          <td><span class="meta">${fmtDaysToClose(o.days_to_close)}</span></td>
         </tr>`).join('')}</tbody>
     </table>`;
   }
+  window.selectStage = selectStage;
 
   function renderGoals() {
     const d = salesData;
