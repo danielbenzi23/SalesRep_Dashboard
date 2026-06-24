@@ -122,8 +122,22 @@ export default async function handler(req, res) {
   const { start: qStart, end: qEnd, name: qName } = quarterRange(now);
   const yStart = yearStart(now);
 
+  // Rolling windows for activity counts
+  const sevenDaysAgo  = new Date(now.getTime() - 7  * 86400000);
+  const thirtyDaysAgo = new Date(now.getTime() - 30 * 86400000);
+
   const ownerFilter = { propertyName: 'hubspot_owner_id', operator: 'EQ', value: ownerId };
   const pipelineFilter = { propertyName: 'pipeline', operator: 'EQ', value: DS_PIPELINE };
+
+  // Helper: count of an engagement object in a date window
+  const countEng = async (obj, dateProp, fromISO, toISO) =>
+    (await hsSearch(hsToken, obj, {
+      filterGroups: [{ filters: [
+        ownerFilter,
+        { propertyName: dateProp, operator: 'BETWEEN', value: fromISO, highValue: toISO }
+      ]}],
+      limit: 1, properties: []
+    })).total || 0;
 
   // ---- Parallel data fetches ----
   const [
@@ -133,7 +147,22 @@ export default async function handler(req, res) {
     tasksDueTodayResp,
     meetingsThisWeekResp,
     recentWonResp,
-    recentLostResp
+    recentLostResp,
+    // Activity counts (rolling 7d)
+    callsWeek,
+    emailsWeek,
+    meetingsWeek,
+    tasksWeek,
+    // Activity counts (rolling 30d)
+    calls30d,
+    emails30d,
+    meetings30d,
+    tasks30d,
+    // Recent activity feed (top 10 of each type)
+    recentCallsResp,
+    recentEmailsResp,
+    recentMeetingsResp,
+    recentTasksResp
   ] = await Promise.all([
     // Open deals owned by rep, in DS pipeline, not closed
     fetchAll(hsToken, 'deals', [
@@ -183,7 +212,33 @@ export default async function handler(req, res) {
       pipelineFilter, ownerFilter,
       { propertyName: 'dealstage', operator: 'IN', values: LOST_STAGE_IDS }
     ], ['dealname', 'amount', 'closedate', 'closed_lost_reason'],
-      [{ propertyName: 'closedate', direction: 'DESCENDING' }], 1)
+      [{ propertyName: 'closedate', direction: 'DESCENDING' }], 1),
+
+    // ---- Activity counts (last 7 days) ----
+    countEng('calls',    'hs_timestamp',           sevenDaysAgo.toISOString(), now.toISOString()),
+    countEng('emails',   'hs_timestamp',           sevenDaysAgo.toISOString(), now.toISOString()),
+    countEng('meetings', 'hs_meeting_start_time',  sevenDaysAgo.toISOString(), now.toISOString()),
+    countEng('tasks',    'hs_timestamp',           sevenDaysAgo.toISOString(), now.toISOString()),
+
+    // ---- Activity counts (last 30 days) ----
+    countEng('calls',    'hs_timestamp',           thirtyDaysAgo.toISOString(), now.toISOString()),
+    countEng('emails',   'hs_timestamp',           thirtyDaysAgo.toISOString(), now.toISOString()),
+    countEng('meetings', 'hs_meeting_start_time',  thirtyDaysAgo.toISOString(), now.toISOString()),
+    countEng('tasks',    'hs_timestamp',           thirtyDaysAgo.toISOString(), now.toISOString()),
+
+    // ---- Recent activity feed (last 10 of each type) ----
+    fetchAll(hsToken, 'calls',    [ownerFilter, { propertyName: 'hs_timestamp', operator: 'GTE', value: thirtyDaysAgo.toISOString() }],
+      ['hs_call_title', 'hs_call_body', 'hs_call_direction', 'hs_call_duration', 'hs_timestamp'],
+      [{ propertyName: 'hs_timestamp', direction: 'DESCENDING' }], 1),
+    fetchAll(hsToken, 'emails',   [ownerFilter, { propertyName: 'hs_timestamp', operator: 'GTE', value: thirtyDaysAgo.toISOString() }],
+      ['hs_email_subject', 'hs_email_direction', 'hs_email_status', 'hs_timestamp'],
+      [{ propertyName: 'hs_timestamp', direction: 'DESCENDING' }], 1),
+    fetchAll(hsToken, 'meetings', [ownerFilter, { propertyName: 'hs_meeting_start_time', operator: 'GTE', value: thirtyDaysAgo.toISOString() }],
+      ['hs_meeting_title', 'hs_meeting_outcome', 'hs_meeting_start_time'],
+      [{ propertyName: 'hs_meeting_start_time', direction: 'DESCENDING' }], 1),
+    fetchAll(hsToken, 'tasks',    [ownerFilter, { propertyName: 'hs_timestamp', operator: 'GTE', value: thirtyDaysAgo.toISOString() }],
+      ['hs_task_subject', 'hs_task_status', 'hs_task_type', 'hs_timestamp'],
+      [{ propertyName: 'hs_timestamp', direction: 'DESCENDING' }], 1)
   ]);
 
   // ---- Compute Today tab ----
@@ -285,6 +340,46 @@ export default async function handler(req, res) {
     };
   });
 
+  // ---- Recent activity feed (merge + sort top 20) ----
+  const feed = [];
+  for (const c of recentCallsResp) {
+    feed.push({
+      type: 'call',
+      subject: c.properties.hs_call_title || '(no title)',
+      direction: c.properties.hs_call_direction || null,
+      duration_sec: c.properties.hs_call_duration ? Math.round(+c.properties.hs_call_duration / 1000) : null,
+      when: c.properties.hs_timestamp || null
+    });
+  }
+  for (const e of recentEmailsResp) {
+    feed.push({
+      type: 'email',
+      subject: e.properties.hs_email_subject || '(no subject)',
+      direction: e.properties.hs_email_direction || null,
+      status: e.properties.hs_email_status || null,
+      when: e.properties.hs_timestamp || null
+    });
+  }
+  for (const m2 of recentMeetingsResp) {
+    feed.push({
+      type: 'meeting',
+      subject: m2.properties.hs_meeting_title || '(no title)',
+      outcome: m2.properties.hs_meeting_outcome || null,
+      when: m2.properties.hs_meeting_start_time || null
+    });
+  }
+  for (const t of recentTasksResp) {
+    feed.push({
+      type: 'task',
+      subject: t.properties.hs_task_subject || '(no subject)',
+      status: t.properties.hs_task_status || null,
+      task_type: t.properties.hs_task_type || null,
+      when: t.properties.hs_timestamp || null
+    });
+  }
+  feed.sort((a, b) => new Date(b.when || 0) - new Date(a.when || 0));
+  const recentActivityFeed = feed.slice(0, 20);
+
   return res.status(200).json({
     rep: { ownerId, name: ownerName, email: user.email, role: user.role, annualQuota },
     asOf: now.toISOString(),
@@ -302,6 +397,11 @@ export default async function handler(req, res) {
       annual_quota: annualQuota,
       percent_to_quota: annualQuota > 0 ? closedYtd / annualQuota : 0,
       gap: Math.max(0, annualQuota - closedYtd)
+    },
+    activity: {
+      week:  { calls: callsWeek,  emails: emailsWeek,  meetings: meetingsWeek,  tasks: tasksWeek  },
+      month: { calls: calls30d,   emails: emails30d,   meetings: meetings30d,   tasks: tasks30d   },
+      recent_feed: recentActivityFeed
     },
     pipeline: { funnel, open_deals: openDealsTable },
     recent: { won: recentWon, lost: recentLost },
