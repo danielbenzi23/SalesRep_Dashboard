@@ -4,7 +4,16 @@
 // No database. No cache. Pure Confluence → Claude → response.
 
 import { verifyAuthCookie } from '../lib/auth.js';
-import { fetchPage, htmlToText } from '../lib/confluence.js';
+import {
+  fetchPage,
+  htmlToText,
+  findInsightChildPage,
+  createInsightChildPage,
+  updateInsightChildPage,
+  addLabels,
+  extractInsightJson,
+  ANALYZED_LABEL
+} from '../lib/confluence.js';
 
 const SYSTEM_PROMPT = `You are an expert sales-call analyst for DegreeSight, a B2B SaaS company that sells online learning infrastructure to universities, bootcamps, and continuing-education programs.
 
@@ -116,12 +125,28 @@ export default async function handler(req, res) {
   if (typeof body === 'string') {
     try { body = JSON.parse(body); } catch { body = {}; }
   }
-  const { confluence_page_id } = body || {};
+  const { confluence_page_id, force = false } = body || {};
   if (!confluence_page_id) {
     return res.status(400).json({ error: 'confluence_page_id is required' });
   }
 
-  // Fetch from Confluence
+  // 1) Check Confluence for an existing "Claude Insights" child page (cache)
+  let existingInsightPage = null;
+  if (!force) {
+    try {
+      existingInsightPage = await findInsightChildPage(confluence_page_id);
+    } catch (e) {
+      console.error('[transcript-insight] cache lookup failed:', e.message);
+    }
+    if (existingInsightPage) {
+      const cached = extractInsightJson(existingInsightPage.body?.storage?.value);
+      if (cached) {
+        return res.status(200).json({ ...cached, _cached: true });
+      }
+    }
+  }
+
+  // 2) Cache miss — fetch the actual transcript and analyze
   let page;
   try {
     page = await fetchPage(confluence_page_id);
@@ -134,7 +159,6 @@ export default async function handler(req, res) {
     return res.status(422).json({ error: 'transcript_too_short', char_count: transcript_text.length });
   }
 
-  // Analyze with Claude
   let insight;
   try {
     insight = await analyze({
@@ -147,12 +171,33 @@ export default async function handler(req, res) {
     return res.status(502).json({ error: 'analysis_failed', detail: e.message });
   }
 
-  return res.status(200).json({
+  const fullInsight = {
     page_id: page.page_id,
     meeting_title: page.title,
     meeting_date: page.created,
     source_url: page.url,
     model_used: 'claude-haiku-4-5',
+    analyzed_at: new Date().toISOString(),
+    analyzed_by: user.email,
     ...insight
-  });
+  };
+
+  // 3) Save back to Confluence as child page + labels (don't fail the request if save fails)
+  try {
+    if (existingInsightPage && force) {
+      // Update existing insight page
+      const versionNum = existingInsightPage.version?.number || 1;
+      await updateInsightChildPage(existingInsightPage.id, versionNum, fullInsight);
+    } else {
+      await createInsightChildPage(confluence_page_id, fullInsight);
+    }
+    const labels = [ANALYZED_LABEL];
+    if (insight.sentiment) labels.push(`sentiment-${insight.sentiment.replace(/_/g, '-')}`);
+    await addLabels(confluence_page_id, labels);
+  } catch (e) {
+    console.error('[transcript-insight] save to Confluence failed:', e.message);
+    fullInsight._save_error = e.message;
+  }
+
+  return res.status(200).json({ ...fullInsight, _cached: false });
 }
