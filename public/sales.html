@@ -918,10 +918,10 @@
     }
     const fmtDelta = (d, suffix = '') => {
       if (d == null) return '—';
-      if (d === 0) return '<span class="meta">0</span>';
+      if (Math.abs(d) < 0.5) return '<span class="meta">0</span>';
       const color = d > 0 ? '#0F6E56' : '#791F1F';
       const arrow = d > 0 ? '▲' : '▼';
-      return `<span style="color:${color};font-weight:500">${arrow} ${Math.abs(d).toFixed(0)}${suffix}</span>`;
+      return `<span style="color:${color};font-weight:500">${arrow} ${Math.round(Math.abs(d))}${suffix}</span>`;
     };
     const fmtRankDelta = (d) => {
       if (d == null) return '—';
@@ -930,12 +930,24 @@
       const arrow = d > 0 ? '▲' : '▼';
       return `<span style="color:${color};font-weight:500">${arrow} ${Math.abs(d)}</span>`;
     };
+    const tierBadge = (t) => {
+      if (!t) return '—';
+      const map = {
+        very_high: { color: '#0F6E56', bg: '#E1F5EE', txt: 'Very high' },
+        high:      { color: '#185FA5', bg: '#E6F1FB', txt: 'High' },
+        medium:    { color: '#854F0B', bg: '#FAEEDA', txt: 'Medium' },
+        low:       { color: '#791F1F', bg: '#FCEBEB', txt: 'Low' }
+      };
+      const m = map[t] || { color: '#5F5E5A', bg: '#F1EFE8', txt: t };
+      return `<span class="badge" style="background:${m.bg};color:${m.color}">${m.txt}</span>`;
+    };
     t.innerHTML = `<table>
       <thead><tr>
         <th>#</th>
         <th>Contact</th>
         <th>Company</th>
         <th style="text-align:right">Score</th>
+        <th>Tier</th>
         <th style="text-align:right">Δ score</th>
         <th style="text-align:right">Δ rank</th>
         <th>Stage</th>
@@ -951,6 +963,7 @@
           </td>
           <td>${escapeHtml(c.company || '—')}</td>
           <td style="text-align:right;font-weight:500">${Math.round(c.score)}</td>
+          <td>${tierBadge(c.tier)}</td>
           <td style="text-align:right">${fmtDelta(c.score_delta)}</td>
           <td style="text-align:right">${fmtRankDelta(c.rank_delta)}</td>
           <td>${escapeHtml(c.lifecyclestage || '—')}</td>
