@@ -100,6 +100,7 @@
   <div class="tabs">
     <div class="tab active" data-tab="today">Today</div>
     <div class="tab" data-tab="pipeline">My pipeline</div>
+    <div class="tab" data-tab="activity">My activity</div>
     <div class="tab" data-tab="conversations">Conversations</div>
     <div class="tab" data-tab="goals">My goals</div>
     <div class="tab" data-tab="recent">Recent</div>
@@ -137,6 +138,14 @@
 
       <div style="margin-top: 14px;">
         <div class="panel">
+          <div class="panel-title">📞 Activity this week</div>
+          <div class="panel-sub">Last 7 days · calls, emails, meetings, tasks logged</div>
+          <div id="activity-week" style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px"></div>
+        </div>
+      </div>
+
+      <div style="margin-top: 14px;">
+        <div class="panel">
           <div class="panel-title">🎙 Recent meeting insights</div>
           <div class="panel-sub">Pulled from Confluence transcripts · click to analyze sentiment</div>
           <div id="recent-meetings" class="loading">Loading…</div>
@@ -150,6 +159,21 @@
       <div style="margin-top: 14px;" class="panel">
         <div class="panel-title">My open deals</div>
         <div id="open-deals-table" class="loading">Loading…</div>
+      </div>
+    </div>
+
+    <!-- MY ACTIVITY -->
+    <div data-panel="activity" style="display:none">
+      <div class="stat-grid">
+        <div class="stat"><div class="lbl">Calls (30d)</div><div class="val" id="act-calls">—</div></div>
+        <div class="stat"><div class="lbl">Emails (30d)</div><div class="val" id="act-emails">—</div></div>
+        <div class="stat"><div class="lbl">Meetings (30d)</div><div class="val" id="act-meetings">—</div></div>
+        <div class="stat"><div class="lbl">Tasks (30d)</div><div class="val" id="act-tasks">—</div></div>
+      </div>
+      <div class="panel">
+        <div class="panel-title">Recent activity feed</div>
+        <div class="panel-sub">Last 20 calls / emails / meetings / tasks logged in HubSpot · newest first</div>
+        <div id="activity-feed" class="loading">Loading…</div>
       </div>
     </div>
 
@@ -458,11 +482,64 @@
     return String(s).replace(/[&<>"']/g, c => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c]));
   }
 
+  function renderActivityWeekTiles() {
+    const w = salesData.activity?.week || {};
+    const tiles = [
+      { lbl: 'Calls',    val: w.calls    ?? 0, icon: '📞' },
+      { lbl: 'Emails',   val: w.emails   ?? 0, icon: '✉' },
+      { lbl: 'Meetings', val: w.meetings ?? 0, icon: '🎙' },
+      { lbl: 'Tasks',    val: w.tasks    ?? 0, icon: '✓' }
+    ];
+    document.getElementById('activity-week').innerHTML = tiles.map(t => `
+      <div class="stat" style="padding:10px 12px">
+        <div class="lbl">${t.icon} ${t.lbl}</div>
+        <div class="val" style="font-size:22px">${t.val}</div>
+      </div>
+    `).join('');
+  }
+
+  function renderMyActivity() {
+    const a = salesData.activity || { month: {}, recent_feed: [] };
+    document.getElementById('act-calls').textContent    = a.month.calls    ?? 0;
+    document.getElementById('act-emails').textContent   = a.month.emails   ?? 0;
+    document.getElementById('act-meetings').textContent = a.month.meetings ?? 0;
+    document.getElementById('act-tasks').textContent    = a.month.tasks    ?? 0;
+
+    const feedEl = document.getElementById('activity-feed');
+    if (!a.recent_feed.length) {
+      feedEl.innerHTML = '<div style="color:#888780">No activity in the last 30 days</div>';
+      return;
+    }
+    const typeStyle = {
+      call:    { icon: '📞', color: '#2D58A8' },
+      email:   { icon: '✉',  color: '#378ADD' },
+      meeting: { icon: '🎙', color: '#1D9E75' },
+      task:    { icon: '✓',  color: '#BA7517' }
+    };
+    feedEl.innerHTML = a.recent_feed.map(f => {
+      const s = typeStyle[f.type] || { icon: '·', color: '#888' };
+      const extra = f.duration_sec ? ` · ${Math.round(f.duration_sec / 60)}min`
+                  : f.outcome ? ` · ${escapeHtml(f.outcome)}`
+                  : f.status ? ` · ${escapeHtml(f.status)}`
+                  : '';
+      return `<div class="row">
+        <span>
+          <span style="color:${s.color};margin-right:6px">${s.icon}</span>
+          <span style="font-weight:500">${escapeHtml(f.subject)}</span>
+          <span class="meta" style="margin-left:6px">${f.type}${extra}</span>
+        </span>
+        <span class="meta">${ago(f.when)}</span>
+      </div>`;
+    }).join('');
+  }
+
   function renderAll() {
     if (!salesData) return;
     document.getElementById('rep-sub').textContent = salesData.rep.name + ' · ' + salesData.rep.email;
     renderRepSelect();
     renderToday();
+    renderActivityWeekTiles();
+    renderMyActivity();
     renderPipeline();
     renderGoals();
     renderRecent();
