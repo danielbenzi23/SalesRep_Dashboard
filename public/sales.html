@@ -170,6 +170,13 @@
         <div class="stat"><div class="lbl">Meetings (30d)</div><div class="val" id="act-meetings">—</div></div>
         <div class="stat"><div class="lbl">Tasks (30d)</div><div class="val" id="act-tasks">—</div></div>
       </div>
+
+      <div class="panel" style="margin-bottom:14px">
+        <div class="panel-title">📧 Email performance (30d)</div>
+        <div class="panel-sub">Tracked emails sent from HubSpot · rates excluded if zero sent</div>
+        <div id="email-perf" style="display:grid;grid-template-columns:repeat(5,1fr);gap:10px;margin-top:8px"></div>
+      </div>
+
       <div class="panel">
         <div class="panel-title">Recent activity feed</div>
         <div class="panel-sub">Last 20 calls / emails / meetings / tasks logged in HubSpot · newest first</div>
@@ -499,11 +506,28 @@
   }
 
   function renderMyActivity() {
-    const a = salesData.activity || { month: {}, recent_feed: [] };
+    const a = salesData.activity || { month: {}, recent_feed: [], email_performance: {} };
     document.getElementById('act-calls').textContent    = a.month.calls    ?? 0;
     document.getElementById('act-emails').textContent   = a.month.emails   ?? 0;
     document.getElementById('act-meetings').textContent = a.month.meetings ?? 0;
     document.getElementById('act-tasks').textContent    = a.month.tasks    ?? 0;
+
+    // Email performance
+    const ep = a.email_performance || {};
+    const tiles = [
+      { lbl: 'Sent',        val: ep.sent ?? 0,    rate: null },
+      { lbl: 'Open rate',   val: fmtPct(ep.open_rate),   sub: `${ep.opened ?? 0} opens` },
+      { lbl: 'Click rate',  val: fmtPct(ep.click_rate),  sub: `${ep.clicked ?? 0} clicks` },
+      { lbl: 'Reply rate',  val: fmtPct(ep.reply_rate),  sub: `${ep.replied ?? 0} replies` },
+      { lbl: 'Bounce rate', val: fmtPct(ep.bounce_rate), sub: `${ep.bounced ?? 0} bounces` }
+    ];
+    document.getElementById('email-perf').innerHTML = tiles.map(t => `
+      <div class="stat" style="padding:12px">
+        <div class="lbl">${t.lbl}</div>
+        <div class="val" style="font-size:22px">${t.val}</div>
+        ${t.sub ? `<div style="font-size:11px;color:#888780;margin-top:2px">${t.sub}</div>` : ''}
+      </div>
+    `).join('');
 
     const feedEl = document.getElementById('activity-feed');
     if (!a.recent_feed.length) {
