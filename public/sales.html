@@ -101,6 +101,8 @@
     <div class="tab active" data-tab="today">Today</div>
     <div class="tab" data-tab="pipeline">My pipeline</div>
     <div class="tab" data-tab="activity">My activity</div>
+    <div class="tab" data-tab="emails">Emails</div>
+    <div class="tab" data-tab="leads">Leads</div>
     <div class="tab" data-tab="conversations">Conversations</div>
     <div class="tab" data-tab="goals">My goals</div>
     <div class="tab" data-tab="recent">Recent</div>
@@ -189,6 +191,54 @@
         <div class="panel-title">Recent activity feed</div>
         <div class="panel-sub">Last 20 calls / emails / meetings / tasks logged in HubSpot · newest first</div>
         <div id="activity-feed" class="loading">Loading…</div>
+      </div>
+    </div>
+
+    <!-- EMAILS -->
+    <div data-panel="emails" style="display:none">
+      <div class="panel" style="margin-bottom:14px">
+        <div class="panel-title">📧 Email performance (30d)</div>
+        <div class="panel-sub">Counts + rates from tracked emails</div>
+        <div id="emails-tab-metrics" style="display:grid;grid-template-columns:repeat(5,1fr);gap:10px;margin-top:8px"></div>
+      </div>
+      <div class="panel">
+        <div class="panel-title">Email threads (last 30d)</div>
+        <div class="panel-sub">Click any thread to see the body + replies</div>
+        <div style="display:flex;gap:8px;margin:8px 0;align-items:center;font-size:12px">
+          <input type="text" id="email-search" placeholder="Search subject or recipient…" style="flex:1;padding:6px 10px;border:0.5px solid rgba(0,0,0,0.15);border-radius:6px;font-size:12px" />
+          <select id="email-status-filter" style="padding:6px 10px;border:0.5px solid rgba(0,0,0,0.15);border-radius:6px;font-size:12px">
+            <option value="">All statuses</option>
+            <option value="replied">Replied</option>
+            <option value="opened">Opened (no reply)</option>
+            <option value="bounced">Bounced</option>
+            <option value="sent">Sent only</option>
+          </select>
+        </div>
+        <div id="email-threads-list" class="loading">Loading…</div>
+      </div>
+    </div>
+
+    <!-- LEADS -->
+    <div data-panel="leads" style="display:none">
+      <div class="panel" style="margin-bottom:14px">
+        <div style="display:flex;justify-content:space-between;align-items:center">
+          <div>
+            <div class="panel-title">🎯 Top contacts by lead score</div>
+            <div class="panel-sub" id="leads-sub">Compared to <span id="leads-compare-days-label">7</span> days ago</div>
+          </div>
+          <div style="display:flex;gap:8px;align-items:center;font-size:12px">
+            <label>Compare to:</label>
+            <select id="leads-compare-days" style="padding:6px 10px;border:0.5px solid rgba(0,0,0,0.15);border-radius:6px;font-size:12px">
+              <option value="7">7 days ago</option>
+              <option value="14">14 days ago</option>
+              <option value="30">30 days ago</option>
+            </select>
+            <input type="text" id="leads-search" placeholder="Search…" style="padding:6px 10px;border:0.5px solid rgba(0,0,0,0.15);border-radius:6px;font-size:12px;width:160px" />
+          </div>
+        </div>
+      </div>
+      <div class="panel">
+        <div id="leads-table" class="loading">Loading top contacts…</div>
       </div>
     </div>
 
@@ -702,6 +752,214 @@
     renderTranscripts('recent-meetings', 5);
   }
 
+  // -------- EMAILS TAB --------
+  let emailThreadsCache = null;
+
+  async function loadEmails() {
+    if (emailThreadsCache) {
+      renderEmailThreads();
+      return;
+    }
+    document.getElementById('email-threads-list').innerHTML = '<div class="loading">Loading emails…</div>';
+    try {
+      const r = await fetch('/api/emails?days=30&limit=100');
+      if (!r.ok) {
+        const j = await r.json().catch(() => ({}));
+        document.getElementById('email-threads-list').innerHTML = `<div style="color:#791F1F">Error: ${j.error || r.status}</div>`;
+        return;
+      }
+      emailThreadsCache = await r.json();
+      renderEmailThreads();
+    } catch (e) {
+      document.getElementById('email-threads-list').innerHTML = `<div style="color:#791F1F">Network error: ${e.message}</div>`;
+    }
+  }
+
+  function renderEmailThreads() {
+    // Top metrics (reuse email_performance from salesData if loaded)
+    const ep = salesData?.activity?.email_performance || {};
+    const m = [
+      { lbl: 'Sent',        val: ep.sent ?? 0 },
+      { lbl: 'Open rate',   val: fmtPct(ep.open_rate),   sub: `${ep.opened ?? 0} opens` },
+      { lbl: 'Click rate',  val: fmtPct(ep.click_rate),  sub: `${ep.clicked ?? 0} clicks` },
+      { lbl: 'Reply rate',  val: fmtPct(ep.reply_rate),  sub: `${ep.replied ?? 0} replies` },
+      { lbl: 'Bounce rate', val: fmtPct(ep.bounce_rate), sub: `${ep.bounced ?? 0} bounces` }
+    ];
+    document.getElementById('emails-tab-metrics').innerHTML = m.map(t => `
+      <div class="stat" style="padding:12px">
+        <div class="lbl">${t.lbl}</div>
+        <div class="val" style="font-size:22px">${t.val}</div>
+        ${t.sub ? `<div style="font-size:11px;color:#888780;margin-top:2px">${t.sub}</div>` : ''}
+      </div>
+    `).join('');
+
+    const search = (document.getElementById('email-search')?.value || '').toLowerCase();
+    const status = document.getElementById('email-status-filter')?.value || '';
+
+    let threads = emailThreadsCache?.threads || [];
+
+    if (search) {
+      threads = threads.filter(t =>
+        (t.latest_subject || '').toLowerCase().includes(search) ||
+        (t.recipients || []).join(' ').toLowerCase().includes(search) ||
+        (t.senders || []).join(' ').toLowerCase().includes(search)
+      );
+    }
+    if (status === 'replied') threads = threads.filter(t => t.reply_count > 0);
+    else if (status === 'opened') threads = threads.filter(t => t.open_count > 0 && t.reply_count === 0);
+    else if (status === 'bounced') threads = threads.filter(t => t.bounce_count > 0);
+    else if (status === 'sent') threads = threads.filter(t => t.sent_count > 0 && t.reply_count === 0 && t.open_count === 0);
+
+    const target = document.getElementById('email-threads-list');
+    if (!threads.length) {
+      target.innerHTML = '<div style="color:#888780;font-size:13px;padding:20px;text-align:center">No matching threads</div>';
+      return;
+    }
+
+    target.innerHTML = threads.map(t => {
+      const recipients = (t.recipients || []).slice(0, 2).join(', ') + (t.recipients?.length > 2 ? ` +${t.recipients.length - 2}` : '');
+      const replyBadge = t.reply_count > 0 ? `<span class="badge positive">↩ ${t.reply_count} ${t.reply_count > 1 ? 'replies' : 'reply'}</span>` : '';
+      const openBadge = t.open_count > 0 ? `<span class="badge neutral">👁 ${t.open_count}</span>` : '';
+      const bounceBadge = t.bounce_count > 0 ? `<span class="badge stale">bounced</span>` : '';
+      return `<div class="transcript-card" onclick="openEmailThread('${t.thread_id}')">
+        <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px">
+          <div style="flex:1;min-width:0">
+            <div class="transcript-title" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escapeHtml(t.latest_subject || '(no subject)')}</div>
+            <div class="transcript-meta">${recipients || '—'} · ${ago(t.latest_when)} · ${t.sent_count} sent</div>
+          </div>
+          <div style="display:flex;gap:4px;flex-shrink:0;flex-wrap:wrap;justify-content:flex-end">
+            ${replyBadge}${openBadge}${bounceBadge}
+          </div>
+        </div>
+      </div>`;
+    }).join('');
+  }
+
+  async function openEmailThread(threadId) {
+    const modal = document.getElementById('modal-bg');
+    document.getElementById('modal-title').textContent = 'Loading thread…';
+    document.getElementById('modal-body').innerHTML = '<div class="loading">Fetching email bodies…</div>';
+    modal.classList.add('show');
+    try {
+      const r = await fetch(`/api/email-detail?thread_id=${encodeURIComponent(threadId)}`);
+      if (!r.ok) {
+        const j = await r.json().catch(() => ({}));
+        document.getElementById('modal-body').innerHTML = `<div style="color:#791F1F">Error: ${j.error || r.status}</div>`;
+        return;
+      }
+      const data = await r.json();
+      const emails = data.emails || [];
+      document.getElementById('modal-title').textContent = emails[0]?.subject || 'Email thread';
+      if (!emails.length) {
+        document.getElementById('modal-body').innerHTML = '<div style="color:#888780">No emails in thread</div>';
+        return;
+      }
+      document.getElementById('modal-body').innerHTML = emails.map(e => {
+        const sideColor = e.is_incoming ? '#1D9E75' : '#2D58A8';
+        const sideLabel = e.is_incoming ? '↩ Reply' : '→ Sent';
+        const body = e.text || (e.html ? e.html.replace(/<[^>]+>/g, '') : '(no body)');
+        return `<div style="border-left:3px solid ${sideColor};padding:10px 12px;margin-bottom:14px;background:#fafafa;border-radius:0 8px 8px 0">
+          <div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:6px">
+            <span><strong style="font-weight:500;color:${sideColor}">${sideLabel}</strong> · ${escapeHtml(e.from || '?')} → ${escapeHtml(e.to || '?')}</span>
+            <span class="meta">${ago(e.when)}${e.opens ? ` · ${e.opens} open${e.opens > 1 ? 's' : ''}` : ''}${e.clicks ? ` · ${e.clicks} click${e.clicks > 1 ? 's' : ''}` : ''}</span>
+          </div>
+          <div style="font-size:13px;color:#1A1A1A;white-space:pre-wrap;line-height:1.5;max-height:300px;overflow-y:auto">${escapeHtml(body.slice(0, 5000))}${body.length > 5000 ? '…' : ''}</div>
+        </div>`;
+      }).join('');
+    } catch (e) {
+      document.getElementById('modal-body').innerHTML = `<div style="color:#791F1F">Error: ${e.message}</div>`;
+    }
+  }
+  window.openEmailThread = openEmailThread;
+
+  // -------- LEADS TAB --------
+  let leadsCache = null;
+  let leadsCacheDays = null;
+
+  async function loadLeads(forceDays) {
+    const days = forceDays || parseInt(document.getElementById('leads-compare-days').value || '7', 10);
+    if (leadsCache && leadsCacheDays === days) {
+      renderLeads();
+      return;
+    }
+    document.getElementById('leads-table').innerHTML = '<div class="loading">Loading top 100 contacts… (this takes ~5-10s — pulling property history)</div>';
+    try {
+      const r = await fetch(`/api/lead-scoring?limit=100&days=${days}`);
+      if (!r.ok) {
+        const j = await r.json().catch(() => ({}));
+        document.getElementById('leads-table').innerHTML = `<div style="color:#791F1F">Error: ${j.error || r.status} ${j.detail ? '· ' + j.detail : ''}</div>`;
+        return;
+      }
+      leadsCache = await r.json();
+      leadsCacheDays = days;
+      document.getElementById('leads-compare-days-label').textContent = days;
+      renderLeads();
+    } catch (e) {
+      document.getElementById('leads-table').innerHTML = `<div style="color:#791F1F">Network error: ${e.message}</div>`;
+    }
+  }
+
+  function renderLeads() {
+    if (!leadsCache) return;
+    const search = (document.getElementById('leads-search')?.value || '').toLowerCase();
+    let contacts = leadsCache.contacts || [];
+    if (search) {
+      contacts = contacts.filter(c =>
+        (c.name || '').toLowerCase().includes(search) ||
+        (c.company || '').toLowerCase().includes(search) ||
+        (c.email || '').toLowerCase().includes(search) ||
+        (c.jobtitle || '').toLowerCase().includes(search)
+      );
+    }
+    const t = document.getElementById('leads-table');
+    if (!contacts.length) {
+      t.innerHTML = '<div style="color:#888780">No matching contacts</div>';
+      return;
+    }
+    const fmtDelta = (d, suffix = '') => {
+      if (d == null) return '—';
+      if (d === 0) return '<span class="meta">0</span>';
+      const color = d > 0 ? '#0F6E56' : '#791F1F';
+      const arrow = d > 0 ? '▲' : '▼';
+      return `<span style="color:${color};font-weight:500">${arrow} ${Math.abs(d).toFixed(0)}${suffix}</span>`;
+    };
+    const fmtRankDelta = (d) => {
+      if (d == null) return '—';
+      if (d === 0) return '<span class="meta">—</span>';
+      const color = d > 0 ? '#0F6E56' : '#791F1F';
+      const arrow = d > 0 ? '▲' : '▼';
+      return `<span style="color:${color};font-weight:500">${arrow} ${Math.abs(d)}</span>`;
+    };
+    t.innerHTML = `<table>
+      <thead><tr>
+        <th>#</th>
+        <th>Contact</th>
+        <th>Company</th>
+        <th style="text-align:right">Score</th>
+        <th style="text-align:right">Δ score</th>
+        <th style="text-align:right">Δ rank</th>
+        <th>Stage</th>
+        <th>Owner</th>
+        <th></th>
+      </tr></thead>
+      <tbody>${contacts.map(c => `
+        <tr>
+          <td><strong style="font-weight:500">${c.rank}</strong></td>
+          <td>
+            <div style="font-weight:500">${escapeHtml(c.name)}</div>
+            <div class="meta">${escapeHtml(c.email)}</div>
+          </td>
+          <td>${escapeHtml(c.company || '—')}</td>
+          <td style="text-align:right;font-weight:500">${Math.round(c.score)}</td>
+          <td style="text-align:right">${fmtDelta(c.score_delta)}</td>
+          <td style="text-align:right">${fmtRankDelta(c.rank_delta)}</td>
+          <td>${escapeHtml(c.lifecyclestage || '—')}</td>
+          <td>${escapeHtml(c.owner || '—')}</td>
+          <td><a href="${c.hubspot_url}" target="_blank" style="font-size:11px;color:#2D58A8">open ↗</a></td>
+        </tr>`).join('')}</tbody>
+    </table>`;
+  }
+
   // Tabs
   document.querySelectorAll('.tab').forEach(t => {
     t.onclick = () => {
@@ -712,7 +970,18 @@
         p.style.display = p.dataset.panel === target ? '' : 'none';
       });
       if (target === 'conversations') renderTranscripts('all-transcripts', 50);
+      if (target === 'emails') loadEmails();
+      if (target === 'leads') loadLeads();
     };
+  });
+
+  // Wire up email + leads filters
+  document.getElementById('email-search')?.addEventListener('input', () => renderEmailThreads());
+  document.getElementById('email-status-filter')?.addEventListener('change', () => renderEmailThreads());
+  document.getElementById('leads-search')?.addEventListener('input', () => renderLeads());
+  document.getElementById('leads-compare-days')?.addEventListener('change', (e) => {
+    leadsCache = null;
+    loadLeads(parseInt(e.target.value, 10));
   });
 
   // Refresh
