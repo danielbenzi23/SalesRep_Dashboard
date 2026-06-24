@@ -162,7 +162,9 @@ export default async function handler(req, res) {
     recentCallsResp,
     recentEmailsResp,
     recentMeetingsResp,
-    recentTasksResp
+    recentTasksResp,
+    // Full email engagement (30d) for metrics
+    allEmailsResp
   ] = await Promise.all([
     // Open deals owned by rep, in DS pipeline, not closed
     fetchAll(hsToken, 'deals', [
@@ -238,7 +240,16 @@ export default async function handler(req, res) {
       [{ propertyName: 'hs_meeting_start_time', direction: 'DESCENDING' }], 1),
     fetchAll(hsToken, 'tasks',    [ownerFilter, { propertyName: 'hs_timestamp', operator: 'GTE', value: thirtyDaysAgo.toISOString() }],
       ['hs_task_subject', 'hs_task_status', 'hs_task_type', 'hs_timestamp'],
-      [{ propertyName: 'hs_timestamp', direction: 'DESCENDING' }], 1)
+      [{ propertyName: 'hs_timestamp', direction: 'DESCENDING' }], 1),
+
+    // ---- Full email engagement (30d) for open / click / reply / bounce metrics ----
+    fetchAll(hsToken, 'emails', [
+      ownerFilter,
+      { propertyName: 'hs_timestamp', operator: 'GTE', value: thirtyDaysAgo.toISOString() }
+    ], ['hs_email_subject', 'hs_email_status', 'hs_email_direction',
+        'hs_email_open_count', 'hs_email_click_count', 'hs_email_bounce_error_detail_message',
+        'hs_email_thread_id', 'hs_timestamp'],
+      [{ propertyName: 'hs_timestamp', direction: 'DESCENDING' }], 10)
   ]);
 
   // ---- Compute Today tab ----
@@ -380,6 +391,47 @@ export default async function handler(req, res) {
   feed.sort((a, b) => new Date(b.when || 0) - new Date(a.when || 0));
   const recentActivityFeed = feed.slice(0, 20);
 
+  // ---- Email performance (30d) ----
+  // Counts: total outgoing (sent), opened (open_count>0 OR status OPEN/REPLIED), replied (status REPLIED OR thread has incoming reply), bounced (status BOUNCED)
+  const emailObjs = (allEmailsResp || []).map(e => e.properties || {});
+  const outgoing = emailObjs.filter(e => {
+    const dir = (e.hs_email_direction || '').toUpperCase();
+    return dir === 'EMAIL' || dir === 'OUTGOING' || dir === 'OUTGOING_EMAIL' || dir === '';
+  });
+  const incoming = emailObjs.filter(e => {
+    const dir = (e.hs_email_direction || '').toUpperCase();
+    return dir === 'INCOMING_EMAIL' || dir === 'INCOMING';
+  });
+  const sentCount = outgoing.length;
+  const openedCount = outgoing.filter(e => {
+    const status = (e.hs_email_status || '').toUpperCase();
+    const opens = parseInt(e.hs_email_open_count || '0', 10) || 0;
+    return opens > 0 || status === 'OPEN' || status === 'OPENED' || status === 'REPLIED';
+  }).length;
+  const clickedCount = outgoing.filter(e => (parseInt(e.hs_email_click_count || '0', 10) || 0) > 0).length;
+  const repliedThreadIds = new Set(incoming.map(e => e.hs_email_thread_id).filter(Boolean));
+  const repliedCount = outgoing.filter(e => {
+    const status = (e.hs_email_status || '').toUpperCase();
+    return status === 'REPLIED' || (e.hs_email_thread_id && repliedThreadIds.has(e.hs_email_thread_id));
+  }).length;
+  const bouncedCount = outgoing.filter(e => {
+    const status = (e.hs_email_status || '').toUpperCase();
+    return status === 'BOUNCED' || status === 'DROPPED' || !!e.hs_email_bounce_error_detail_message;
+  }).length;
+  const rate = (n) => sentCount > 0 ? n / sentCount : 0;
+
+  const emailPerformance = {
+    sent: sentCount,
+    opened: openedCount,
+    clicked: clickedCount,
+    replied: repliedCount,
+    bounced: bouncedCount,
+    open_rate: rate(openedCount),
+    click_rate: rate(clickedCount),
+    reply_rate: rate(repliedCount),
+    bounce_rate: rate(bouncedCount)
+  };
+
   return res.status(200).json({
     rep: { ownerId, name: ownerName, email: user.email, role: user.role, annualQuota },
     asOf: now.toISOString(),
@@ -401,6 +453,7 @@ export default async function handler(req, res) {
     activity: {
       week:  { calls: callsWeek,  emails: emailsWeek,  meetings: meetingsWeek,  tasks: tasksWeek  },
       month: { calls: calls30d,   emails: emails30d,   meetings: meetings30d,   tasks: tasks30d   },
+      email_performance: emailPerformance,
       recent_feed: recentActivityFeed
     },
     pipeline: { funnel, open_deals: openDealsTable },
