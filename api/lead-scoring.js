@@ -2,7 +2,7 @@
 // Fetches the score history from HubSpot's property-history API (batch read, 1 call for up to 100 ids)
 // Computes WoW delta and position change. No DB needed.
 
-import { verifyAuthCookie, OWNER_ID_TO_NAME } from '../lib/auth.js';
+import { verifyAuthCookie, OWNER_ID_TO_NAME, EMAIL_TO_OWNER_ID } from '../lib/auth.js';
 
 // Lazy-load blob lib so the endpoint still works if @vercel/blob isn't installed yet.
 async function tryLoadSnapshot(beforeISO) {
@@ -49,6 +49,19 @@ export default async function handler(req, res) {
   const limit = Math.min(parseInt(url.searchParams.get('limit') || '100', 10), 200);
   const compareDays = Math.min(Math.max(parseInt(url.searchParams.get('days') || '7', 10), 1), 90);
 
+  // Resolve owner filter
+  // sales role → forced to own ownerId
+  // admin/manager → uses ?ownerId param; ?ownerId=all returns global top
+  let ownerFilterId = null;
+  if (user.role === 'sales') {
+    ownerFilterId = EMAIL_TO_OWNER_ID[user.email] || null;
+  } else {
+    const requested = url.searchParams.get('ownerId');
+    if (requested && requested !== 'all') {
+      ownerFilterId = OWNER_ID_TO_NAME[requested] ? requested : null;
+    }
+  }
+
   // Which score property? DegreeSight uses a custom property "all_engagement_lead_score"
   // (HubSpot's new Lead Scoring app, "All Engagement Lead Score").
   // Allow override via ?property=X or env HUBSPOT_LEAD_SCORE_PROPERTY.
@@ -69,13 +82,17 @@ export default async function handler(req, res) {
     return 'very_high';
   }
 
-  // 1) Top N contacts by the chosen score property
+  // 1) Top N contacts by the chosen score property (optionally filtered by owner)
+  const searchFilters = [
+    { propertyName: SCORE_PROP, operator: 'HAS_PROPERTY' }
+  ];
+  if (ownerFilterId) {
+    searchFilters.push({ propertyName: 'hubspot_owner_id', operator: 'EQ', value: ownerFilterId });
+  }
   let searchRes;
   try {
     searchRes = await hsApi(hsToken, 'POST', '/crm/v3/objects/contacts/search', {
-      filterGroups: [{ filters: [
-        { propertyName: SCORE_PROP, operator: 'HAS_PROPERTY' }
-      ]}],
+      filterGroups: [{ filters: searchFilters }],
       sorts: [{ propertyName: SCORE_PROP, direction: 'DESCENDING' }],
       properties: [
         'firstname', 'lastname', 'email', 'company', SCORE_PROP,
@@ -196,6 +213,10 @@ export default async function handler(req, res) {
     compare_days: compareDays,
     snapshot: snapshotMeta,        // { taken_at, count } or null
     score_property: SCORE_PROP,
+    filtered_by: ownerFilterId ? {
+      ownerId: ownerFilterId,
+      name: OWNER_ID_TO_NAME[ownerFilterId] || null
+    } : null,
     contacts: scored
   });
 }
