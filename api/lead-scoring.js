@@ -3,7 +3,17 @@
 // Computes WoW delta and position change. No DB needed.
 
 import { verifyAuthCookie, OWNER_ID_TO_NAME } from '../lib/auth.js';
-import { getSnapshotBefore } from '../lib/blob.js';
+
+// Lazy-load blob lib so the endpoint still works if @vercel/blob isn't installed yet.
+async function tryLoadSnapshot(beforeISO) {
+  try {
+    const mod = await import('../lib/blob.js');
+    return await mod.getSnapshotBefore(beforeISO);
+  } catch (e) {
+    console.error('[lead-scoring] blob unavailable:', e.message);
+    return null;
+  }
+}
 
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 
@@ -133,14 +143,10 @@ export default async function handler(req, res) {
   // 2b) Also try blob snapshot — used for GLOBAL rank delta only (across all 8k+ contacts)
   let snapshotMap = null;
   let snapshotMeta = null;
-  try {
-    const snap = await getSnapshotBefore(compareDate.toISOString());
-    if (snap && Array.isArray(snap.contacts)) {
-      snapshotMap = Object.fromEntries(snap.contacts.map(c => [String(c.id), c]));
-      snapshotMeta = { taken_at: snap.taken_at, count: snap.count };
-    }
-  } catch (e) {
-    console.error('[lead-scoring] snapshot load failed:', e.message);
+  const snap = await tryLoadSnapshot(compareDate.toISOString());
+  if (snap && Array.isArray(snap.contacts)) {
+    snapshotMap = Object.fromEntries(snap.contacts.map(c => [String(c.id), c]));
+    snapshotMeta = { taken_at: snap.taken_at, count: snap.count };
   }
 
   // 3) Compute deltas using per-contact history (accurate score deltas)
