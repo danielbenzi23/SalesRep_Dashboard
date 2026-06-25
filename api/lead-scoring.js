@@ -3,6 +3,7 @@
 // Computes WoW delta and position change. No DB needed.
 
 import { verifyAuthCookie, OWNER_ID_TO_NAME } from '../lib/auth.js';
+import { getSnapshotBefore } from '../lib/blob.js';
 
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 
@@ -23,17 +24,6 @@ async function hsApi(token, method, path, body, attempt = 0) {
   return r.json();
 }
 
-// History array is sorted newest-first by HubSpot.
-// Return the value at-or-before the targetDate.
-function scoreAtDate(history, targetMs) {
-  if (!Array.isArray(history) || !history.length) return null;
-  for (const e of history) {
-    const t = new Date(e.timestamp || e.timestampISO || 0).getTime();
-    if (t <= targetMs) return parseFloat(e.value) || 0;
-  }
-  // Target is before all known history entries — score was 0 at that point
-  return 0;
-}
 
 export default async function handler(req, res) {
   const token = process.env.DASHBOARD_TOKEN;
@@ -89,34 +79,74 @@ export default async function handler(req, res) {
   }
 
   const top = searchRes.results || [];
-  const ids = top.map(c => c.id);
 
-  // 2) Batch read with property history for the chosen score property
-  let withHistory = {};
-  if (ids.length > 0) {
+  // 2a) Fetch per-contact property history (works for calculated properties)
+  // GET /crm/v3/objects/contacts/{id}?propertiesWithHistory=<score_prop>
+  // Parallelized with concurrency limit.
+  const compareDate = new Date(Date.now() - compareDays * 86400000);
+  const compareMs = compareDate.getTime();
+
+  function scoreAtDate(history, targetMs) {
+    if (!Array.isArray(history) || !history.length) return null;
+    // History is sorted newest-first by HubSpot
+    for (const e of history) {
+      const ts = new Date(e.timestamp).getTime();
+      if (ts <= targetMs) return parseFloat(e.value) || 0;
+    }
+    // Target predates known history → contact didn't have the score yet
+    return 0;
+  }
+
+  async function getContactHistory(id) {
     try {
-      const chunks = [];
-      for (let i = 0; i < ids.length; i += 100) chunks.push(ids.slice(i, i + 100));
-      for (const chunk of chunks) {
-        const batchRes = await hsApi(hsToken, 'POST', '/crm/v3/objects/contacts/batch/read', {
-          propertiesWithHistory: [SCORE_PROP],
-          inputs: chunk.map(id => ({ id }))
-        });
-        for (const r of (batchRes.results || [])) {
-          withHistory[r.id] = r.propertiesWithHistory?.[SCORE_PROP] || [];
-        }
-      }
-    } catch (e) {
-      console.error('[lead-scoring] history batch failed:', e.message);
-      // Continue without history — delta will be null
+      const r = await fetch(
+        `https://api.hubapi.com/crm/v3/objects/contacts/${id}?propertiesWithHistory=${SCORE_PROP}`,
+        { headers: { Authorization: `Bearer ${hsToken}` } }
+      );
+      if (!r.ok) return [];
+      const data = await r.json();
+      return data.propertiesWithHistory?.[SCORE_PROP] || [];
+    } catch {
+      return [];
     }
   }
 
-  // 3) Compute current rank + score-at-comparison-date
-  const compareMs = Date.now() - compareDays * 86400000;
+  // pLimit helper
+  async function pLimit(items, concurrency, fn) {
+    const results = new Array(items.length);
+    let i = 0;
+    async function worker() {
+      while (true) {
+        const idx = i++;
+        if (idx >= items.length) return;
+        results[idx] = await fn(items[idx], idx);
+      }
+    }
+    await Promise.all(Array.from({ length: Math.min(concurrency, items.length) }, worker));
+    return results;
+  }
+
+  const historyByContactId = {};
+  const histories = await pLimit(top.map(c => c.id), 10, getContactHistory);
+  top.forEach((c, idx) => { historyByContactId[c.id] = histories[idx]; });
+
+  // 2b) Also try blob snapshot — used for GLOBAL rank delta only (across all 8k+ contacts)
+  let snapshotMap = null;
+  let snapshotMeta = null;
+  try {
+    const snap = await getSnapshotBefore(compareDate.toISOString());
+    if (snap && Array.isArray(snap.contacts)) {
+      snapshotMap = Object.fromEntries(snap.contacts.map(c => [String(c.id), c]));
+      snapshotMeta = { taken_at: snap.taken_at, count: snap.count };
+    }
+  } catch (e) {
+    console.error('[lead-scoring] snapshot load failed:', e.message);
+  }
+
+  // 3) Compute deltas using per-contact history (accurate score deltas)
   const scored = top.map((c, idx) => {
     const current = parseFloat(c.properties[SCORE_PROP] || '0') || 0;
-    const history = withHistory[c.id] || [];
+    const history = historyByContactId[c.id] || [];
     const past = scoreAtDate(history, compareMs);
     const delta = past != null ? current - past : null;
     return {
@@ -143,15 +173,10 @@ export default async function handler(req, res) {
     };
   });
 
-  // 4) Compute previous ranking among the same N contacts based on past scores
-  const eligible = scored.filter(s => s.score_then != null);
-  const pastRanking = eligible.slice()
-    .sort((a, b) => b.score_then - a.score_then)
-    .map((s, idx) => [s.id, idx + 1]);
-  const pastRankMap = Object.fromEntries(pastRanking);
-
+  // 4) Use the snapshot's recorded GLOBAL rank (if available)
   for (const s of scored) {
-    s.rank_then = pastRankMap[s.id] || null;
+    const prev = snapshotMap?.[String(s.id)];
+    s.rank_then = prev ? prev.r : null;
     s.rank_delta = (s.rank_then != null) ? (s.rank_then - s.rank) : null;
     // Positive rank_delta = moved up (rank improved)
   }
@@ -159,8 +184,10 @@ export default async function handler(req, res) {
   return res.status(200).json({
     count: scored.length,
     as_of: new Date().toISOString(),
-    compared_to: new Date(compareMs).toISOString(),
+    compared_to: compareDate.toISOString(),
     compare_days: compareDays,
+    snapshot: snapshotMeta,        // { taken_at, count } or null
+    score_property: SCORE_PROP,
     contacts: scored
   });
 }
