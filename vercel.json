@@ -1,0 +1,17 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "functions": {
+    "api/sales-data.js": {
+      "maxDuration": 60
+    },
+    "api/lead-scoring.js": {
+      "maxDuration": 60
+    }
+  },
+  "crons": [
+    {
+      "path": "/api/lead-scoring?action=snapshot",
+      "schedule": "0 8 * * 1"
+    }
+  ]
+}
