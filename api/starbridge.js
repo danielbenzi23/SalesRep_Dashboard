@@ -8,8 +8,11 @@ import {
   listTopRecentSignals,
   searchBuyers,
   getBuyerSummary,
-  listRecentBuyerSignals
+  listRecentBuyerSignals,
+  getBuyerAttributes
 } from '../lib/starbridge.js';
+
+export const config = { maxDuration: 30 };
 
 export default async function handler(req, res) {
   const token = process.env.DASHBOARD_TOKEN;
@@ -40,9 +43,11 @@ export default async function handler(req, res) {
       const buyerId = url.searchParams.get('buyerId');
       if (!buyerId) return res.status(400).json({ error: 'buyerId required' });
 
-      const [summaryRes, signalsRes] = await Promise.allSettled([
+      // Always fetch attributes in parallel — they work for any buyer
+      const [summaryRes, signalsRes, attributesRes] = await Promise.allSettled([
         getBuyerSummary(buyerId),
-        listRecentBuyerSignals(buyerId, { pageSize: 20 })
+        listRecentBuyerSignals(buyerId, { pageSize: 20 }),
+        getBuyerAttributes(buyerId)
       ]);
 
       let summary = null, summary_error = null;
@@ -56,7 +61,9 @@ export default async function handler(req, res) {
       if (signalsRes.status === 'fulfilled') signals = signalsRes.value;
       else signals_error = signalsRes.reason.message;
 
-      return res.status(200).json({ buyerId, summary, summary_error, signals, signals_error });
+      const attributes = attributesRes.status === 'fulfilled' ? attributesRes.value : {};
+
+      return res.status(200).json({ buyerId, summary, summary_error, signals, signals_error, attributes });
     }
 
     // ===== SIGNALS LIST (default) =====
