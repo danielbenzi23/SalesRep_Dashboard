@@ -35,17 +35,93 @@ async function hsApi(token, method, path, body, attempt = 0) {
 }
 
 
+export const config = { maxDuration: 60 };
+
+async function handleSnapshot(req, res) {
+  // Lazy import to avoid loading blob lib when not needed
+  let saveSnapshot;
+  try {
+    const mod = await import('../lib/blob.js');
+    saveSnapshot = mod.saveSnapshot;
+  } catch (e) {
+    return res.status(500).json({ error: 'blob_not_available', detail: e.message });
+  }
+
+  const cronSecret = process.env.CRON_SECRET;
+  const cronHeader = req.headers.authorization || req.headers['x-vercel-cron'];
+  const isCron = cronSecret
+    ? cronHeader === `Bearer ${cronSecret}`
+    : !!req.headers['x-vercel-cron'];
+
+  if (!isCron) {
+    const token = process.env.DASHBOARD_TOKEN;
+    const cookies = req.headers.cookie || '';
+    const m = cookies.match(/(?:^|;\s*)auth=([^;]+)/);
+    const user = m && token ? await verifyAuthCookie(m[1], token) : null;
+    if (!user || (user.role !== 'admin' && user.role !== 'manager')) {
+      return res.status(401).json({ error: 'Not authorized — admin or cron only' });
+    }
+  }
+
+  const hsToken = process.env.HUBSPOT_TOKEN;
+  if (!hsToken) return res.status(500).json({ error: 'HUBSPOT_TOKEN not set' });
+
+  const SCORE_PROP = process.env.HUBSPOT_LEAD_SCORE_PROPERTY || 'all_engagement_lead_score';
+
+  const t0 = Date.now();
+  const all = [];
+  let after;
+  let pages = 0;
+  while (all.length < 50000) {
+    const body = {
+      filterGroups: [{ filters: [
+        { propertyName: SCORE_PROP, operator: 'GT', value: '0' }
+      ]}],
+      sorts: [{ propertyName: SCORE_PROP, direction: 'DESCENDING' }],
+      properties: [SCORE_PROP],
+      limit: 200
+    };
+    if (after) body.after = after;
+    const r = await hsApi(hsToken, 'POST', '/crm/v3/objects/contacts/search', body);
+    for (const c of (r.results || [])) {
+      all.push({ id: c.id, s: parseFloat(c.properties[SCORE_PROP] || '0') || 0 });
+    }
+    pages++;
+    if (!r.paging?.next?.after) break;
+    after = r.paging.next.after;
+  }
+  const fetchMs = Date.now() - t0;
+  const ranked = all.map((c, i) => ({ id: c.id, s: c.s, r: i + 1 }));
+  const snapshot = {
+    v: 1, score_property: SCORE_PROP, taken_at: new Date().toISOString(),
+    count: ranked.length, pages, contacts: ranked
+  };
+  const dateKey = new Date().toISOString().slice(0, 10);
+  let saved;
+  try { saved = await saveSnapshot(dateKey, snapshot); }
+  catch (e) { return res.status(502).json({ error: 'blob_save_failed', detail: e.message }); }
+  return res.status(200).json({
+    ok: true, date: dateKey, count: ranked.length,
+    pages_fetched: pages, fetch_ms: fetchMs, total_ms: Date.now() - t0, blob_url: saved.url
+  });
+}
+
 export default async function handler(req, res) {
   const token = process.env.DASHBOARD_TOKEN;
   const hsToken = process.env.HUBSPOT_TOKEN;
   if (!token || !hsToken) return res.status(500).json({ error: 'tokens missing' });
+
+  const url = new URL(req.url, `http://${req.headers.host || 'x'}`);
+  // ----- SNAPSHOT branch -----
+  if (url.searchParams.get('action') === 'snapshot') {
+    return handleSnapshot(req, res);
+  }
 
   const cookies = req.headers.cookie || '';
   const m = cookies.match(/(?:^|;\s*)auth=([^;]+)/);
   const user = m ? await verifyAuthCookie(m[1], token) : null;
   if (!user) return res.status(401).json({ error: 'Not authenticated' });
 
-  const url = new URL(req.url, `http://${req.headers.host || 'x'}`);
   const limit = Math.min(parseInt(url.searchParams.get('limit') || '100', 10), 200);
   const compareDays = Math.min(Math.max(parseInt(url.searchParams.get('days') || '7', 10), 1), 90);
 
