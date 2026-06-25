@@ -677,7 +677,7 @@
       : '<div class="loading">Loading… (Claude runs if not yet cached, ~2s)</div>';
     modal.classList.add('show');
     try {
-      const r = await fetch('/api/transcript-insight', {
+      const r = await fetch('/api/transcripts', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ confluence_page_id: pageId, force })
@@ -811,7 +811,7 @@
     target.innerHTML = '<div class="loading">Loading Zoom meetings…</div>';
     try {
       const ownerParam = salesData?.rep?.ownerId ? `&ownerId=${salesData.rep.ownerId}` : '';
-      const r = await fetch(`/api/zoom-meetings?days=30&limit=${limit}${ownerParam}`);
+      const r = await fetch(`/api/zoom?action=meetings&days=30&limit=${limit}${ownerParam}`);
       if (!r.ok) {
         const j = await r.json().catch(() => ({}));
         target.innerHTML = `<div style="color:#888780;font-size:12px">Zoom unavailable: ${j.error || r.status}</div>`;
@@ -848,7 +848,7 @@
     try {
       const params = uuid ? `meeting_uuid=${encodeURIComponent(uuid)}` : `meeting_id=${id}`;
       const extra  = (uuid && id) ? `&meeting_id=${id}` : '';
-      const r = await fetch(`/api/zoom-meeting-summary?${params}${extra}`);
+      const r = await fetch(`/api/zoom?action=summary&${params}${extra}`);
       if (!r.ok) {
         const j = await r.json().catch(() => ({}));
         document.getElementById('modal-body').innerHTML = `<div style="color:#791F1F">Error: ${j.error || r.status}</div>`;
@@ -1019,7 +1019,7 @@
     document.getElementById('modal-body').innerHTML = '<div class="loading">Fetching email bodies…</div>';
     modal.classList.add('show');
     try {
-      const r = await fetch(`/api/email-detail?thread_id=${encodeURIComponent(threadId)}`);
+      const r = await fetch(`/api/emails?thread_id=${encodeURIComponent(threadId)}`);
       if (!r.ok) {
         const j = await r.json().catch(() => ({}));
         document.getElementById('modal-body').innerHTML = `<div style="color:#791F1F">Error: ${j.error || r.status}</div>`;
@@ -1242,7 +1242,7 @@
     try {
       const params = new URLSearchParams({ period, sort, pageSize: '50' });
       if (filter) params.set('filterType', filter);
-      const r = await fetch(`/api/starbridge-signals?${params}`);
+      const r = await fetch(`/api/starbridge?action=signals&${params}`);
       if (!r.ok) {
         const j = await r.json().catch(() => ({}));
         target.innerHTML = `<div style="color:#791F1F;font-size:13px">Error: ${j.error || r.status} ${j.detail ? '· ' + j.detail : ''}</div>`;
@@ -1300,7 +1300,7 @@
     if (q.length < 2) { target.innerHTML = '<div style="color:#888780;font-size:12px">Type at least 2 characters</div>'; return; }
     target.innerHTML = '<div class="loading">Searching…</div>';
     try {
-      const r = await fetch(`/api/starbridge-buyer-search?q=${encodeURIComponent(q)}`);
+      const r = await fetch(`/api/starbridge?action=search&q=${encodeURIComponent(q)}`);
       if (!r.ok) {
         const j = await r.json().catch(() => ({}));
         target.innerHTML = `<div style="color:#791F1F;font-size:12px">Error: ${j.error || r.status}</div>`;
@@ -1335,7 +1335,7 @@
     document.getElementById('modal-body').innerHTML = '<div class="loading">Generating AI buyer summary… (may take a few seconds first time)</div>';
     modal.classList.add('show');
     try {
-      const r = await fetch(`/api/starbridge-buyer-summary?buyerId=${encodeURIComponent(buyerId)}`);
+      const r = await fetch(`/api/starbridge?action=summary&buyerId=${encodeURIComponent(buyerId)}`);
       if (!r.ok) {
         const j = await r.json().catch(() => ({}));
         document.getElementById('modal-body').innerHTML = `<div style="color:#791F1F">Error: ${j.error || r.status}</div>`;
