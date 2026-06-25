@@ -941,6 +941,10 @@
       const m = map[t] || { color: '#5F5E5A', bg: '#F1EFE8', txt: t };
       return `<span class="badge" style="background:${m.bg};color:${m.color}">${m.txt}</span>`;
     };
+    const dealsBadge = (n) => {
+      if (!n || n === 0) return '<span class="meta">—</span>';
+      return `<span class="badge positive">🤝 ${n}</span>`;
+    };
     t.innerHTML = `<table>
       <thead><tr>
         <th>#</th>
@@ -950,6 +954,7 @@
         <th>Tier</th>
         <th style="text-align:right">Δ score</th>
         <th style="text-align:right">Δ rank</th>
+        <th>Deals</th>
         <th>Stage</th>
         <th>Owner</th>
         <th></th>
@@ -966,6 +971,7 @@
           <td>${tierBadge(c.tier)}</td>
           <td style="text-align:right">${fmtDelta(c.score_delta)}</td>
           <td style="text-align:right">${fmtRankDelta(c.rank_delta)}</td>
+          <td>${dealsBadge(c.deal_count)}</td>
           <td>${escapeHtml(c.lifecyclestage || '—')}</td>
           <td>${escapeHtml(c.owner || '—')}</td>
           <td><a href="${c.hubspot_url}" target="_blank" style="font-size:11px;color:#2D58A8">open ↗</a></td>
