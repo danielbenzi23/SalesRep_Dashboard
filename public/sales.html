@@ -941,9 +941,10 @@
       const m = map[t] || { color: '#5F5E5A', bg: '#F1EFE8', txt: t };
       return `<span class="badge" style="background:${m.bg};color:${m.color}">${m.txt}</span>`;
     };
-    const dealsBadge = (n) => {
+    const dealsBadge = (n, contactId, contactName) => {
       if (!n || n === 0) return '<span class="meta">—</span>';
-      return `<span class="badge positive">🤝 ${n}</span>`;
+      const safeName = (contactName || '').replace(/'/g, '&#39;');
+      return `<span class="badge positive" style="cursor:pointer;user-select:none" onclick="openContactDeals('${contactId}','${safeName}')" title="Click to see deals">🤝 ${n}</span>`;
     };
     t.innerHTML = `<table>
       <thead><tr>
@@ -971,13 +972,65 @@
           <td>${tierBadge(c.tier)}</td>
           <td style="text-align:right">${fmtDelta(c.score_delta)}</td>
           <td style="text-align:right">${fmtRankDelta(c.rank_delta)}</td>
-          <td>${dealsBadge(c.deal_count)}</td>
+          <td>${dealsBadge(c.deal_count, c.id, c.name)}</td>
           <td>${escapeHtml(c.lifecyclestage || '—')}</td>
           <td>${escapeHtml(c.owner || '—')}</td>
           <td><a href="${c.hubspot_url}" target="_blank" style="font-size:11px;color:#2D58A8">open ↗</a></td>
         </tr>`).join('')}</tbody>
     </table>`;
   }
+
+  // -------- CONTACT DEALS MODAL --------
+  async function openContactDeals(contactId, contactName) {
+    const modal = document.getElementById('modal-bg');
+    document.getElementById('modal-title').textContent = `Deals for ${contactName || 'contact'}`;
+    document.getElementById('modal-body').innerHTML = '<div class="loading">Loading deals…</div>';
+    modal.classList.add('show');
+    try {
+      const r = await fetch(`/api/contact-deals?contact_id=${encodeURIComponent(contactId)}`);
+      if (!r.ok) {
+        const j = await r.json().catch(() => ({}));
+        document.getElementById('modal-body').innerHTML = `<div style="color:#791F1F">Error: ${j.error || r.status} ${j.detail ? '· ' + j.detail : ''}</div>`;
+        return;
+      }
+      const data = await r.json();
+      document.getElementById('modal-title').textContent = `Deals for ${contactName} (${data.count})`;
+      if (!data.deals.length) {
+        document.getElementById('modal-body').innerHTML = '<div style="color:#888780">No deals found for this contact</div>';
+        return;
+      }
+      const statusBadge = (d) => {
+        if (d.is_won)  return '<span class="badge positive">won</span>';
+        if (d.is_lost) return '<span class="badge stale">lost</span>';
+        if (d.is_open) return '<span class="badge neutral">open</span>';
+        return '';
+      };
+      document.getElementById('modal-body').innerHTML = data.deals.map(d => `
+        <div style="border:0.5px solid rgba(0,0,0,0.08); border-radius:10px; padding:12px 14px; margin-bottom:10px; background:#fafafa">
+          <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:8px">
+            <div style="flex:1; min-width:0">
+              <div style="font-weight:500; font-size:14px">${escapeHtml(d.dealname)}</div>
+              <div class="meta" style="margin-top:4px">
+                ${escapeHtml(d.stage)} ${statusBadge(d)}
+                ${d.probability != null ? ` · ${Math.round(d.probability * 100)}% prob` : ''}
+              </div>
+            </div>
+            <a href="${d.hubspot_url}" target="_blank" style="font-size:12px; color:#2D58A8; white-space:nowrap">open ↗</a>
+          </div>
+          <div style="display:grid; grid-template-columns:repeat(4,1fr); gap:8px; margin-top:10px; font-size:12px">
+            <div><span style="color:#888780">Amount:</span><div style="font-weight:500">${fmtMoney(d.amount)}</div></div>
+            <div><span style="color:#888780">Close date:</span><div>${fmtDate(d.close_date)}</div></div>
+            <div><span style="color:#888780">Owner:</span><div>${escapeHtml(d.owner || '—')}</div></div>
+            <div><span style="color:#888780">Last activity:</span><div>${ago(d.last_activity)}</div></div>
+          </div>
+          ${d.lost_reason ? `<div style="margin-top:8px;padding-top:8px;border-top:0.5px solid rgba(0,0,0,0.06);font-size:12px;color:#791F1F"><strong style="font-weight:500">Lost reason:</strong> ${escapeHtml(d.lost_reason)}</div>` : ''}
+        </div>
+      `).join('');
+    } catch (e) {
+      document.getElementById('modal-body').innerHTML = `<div style="color:#791F1F">Error: ${e.message}</div>`;
+    }
+  }
+  window.openContactDeals = openContactDeals;
 
   // Tabs
   document.querySelectorAll('.tab').forEach(t => {
