@@ -1,5 +1,7 @@
-// /api/emails — list of email engagements for the rep (last 30d)
-// Grouped client-side. Returns metadata only (no body — body via /api/email-detail).
+// /api/emails — combined list + detail (was 2 functions)
+// GET /api/emails                          → list email threads for rep (last 30d)
+// GET /api/emails?thread_id=X              → full thread bodies
+// GET /api/emails?id=X                     → single email details
 
 import { verifyAuthCookie, EMAIL_TO_OWNER_ID, OWNER_ID_TO_NAME } from '../lib/auth.js';
 
@@ -15,10 +17,14 @@ async function hsSearch(token, body, attempt = 0) {
     await sleep(Math.min(6000, 600 * Math.pow(1.5, attempt)));
     return hsSearch(token, body, attempt + 1);
   }
-  if (!r.ok) {
-    const t = await r.text();
-    throw new Error(`HubSpot emails ${r.status}: ${t.slice(0, 200)}`);
-  }
+  if (!r.ok) throw new Error(`HubSpot emails ${r.status}: ${(await r.text()).slice(0, 200)}`);
+  return r.json();
+}
+
+async function hsGet(token, id) {
+  const url = `https://api.hubapi.com/crm/v3/objects/emails/${id}?properties=hs_email_subject,hs_email_status,hs_email_direction,hs_email_from_email,hs_email_to_email,hs_email_thread_id,hs_email_text,hs_email_html,hs_email_open_count,hs_email_click_count,hs_email_bounce_error_detail_message,hs_timestamp`;
+  const r = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
+  if (!r.ok) throw new Error(`HubSpot email get ${r.status}: ${(await r.text()).slice(0, 200)}`);
   return r.json();
 }
 
@@ -26,18 +32,65 @@ export default async function handler(req, res) {
   const token = process.env.DASHBOARD_TOKEN;
   const hsToken = process.env.HUBSPOT_TOKEN;
   if (!token || !hsToken) return res.status(500).json({ error: 'tokens missing' });
-
   const cookies = req.headers.cookie || '';
   const m = cookies.match(/(?:^|;\s*)auth=([^;]+)/);
   const user = m ? await verifyAuthCookie(m[1], token) : null;
   if (!user) return res.status(401).json({ error: 'Not authenticated' });
 
-  // Resolve owner
-  let ownerId;
   const url = new URL(req.url, `http://${req.headers.host || 'x'}`);
+  const thread_id = url.searchParams.get('thread_id');
+  const single_id = url.searchParams.get('id');
+
+  // ----- DETAIL: single email -----
+  if (single_id) {
+    try {
+      const e = await hsGet(hsToken, single_id);
+      return res.status(200).json({ id: e.id, properties: e.properties });
+    } catch (err) {
+      return res.status(502).json({ error: 'hubspot_failed', detail: err.message });
+    }
+  }
+
+  // ----- DETAIL: full thread -----
+  if (thread_id) {
+    try {
+      const r = await hsSearch(hsToken, {
+        filterGroups: [{ filters: [{ propertyName: 'hs_email_thread_id', operator: 'EQ', value: thread_id }] }],
+        properties: [
+          'hs_email_subject', 'hs_email_status', 'hs_email_direction',
+          'hs_email_from_email', 'hs_email_to_email', 'hs_email_thread_id',
+          'hs_email_text', 'hs_email_html',
+          'hs_email_open_count', 'hs_email_click_count', 'hs_email_bounce_error_detail_message',
+          'hs_timestamp'
+        ],
+        sorts: [{ propertyName: 'hs_timestamp', direction: 'ASCENDING' }],
+        limit: 50
+      });
+      const emails = (r.results || []).map(e => ({
+        id: e.id,
+        subject: e.properties.hs_email_subject || '(no subject)',
+        direction: e.properties.hs_email_direction || null,
+        status: e.properties.hs_email_status || null,
+        from: e.properties.hs_email_from_email || null,
+        to: e.properties.hs_email_to_email || null,
+        text: e.properties.hs_email_text || null,
+        html: e.properties.hs_email_html || null,
+        opens: parseInt(e.properties.hs_email_open_count || '0', 10),
+        clicks: parseInt(e.properties.hs_email_click_count || '0', 10),
+        when: e.properties.hs_timestamp || null,
+        is_incoming: (e.properties.hs_email_direction || '').toUpperCase().includes('INCOMING')
+      }));
+      return res.status(200).json({ thread_id, emails });
+    } catch (err) {
+      return res.status(502).json({ error: 'hubspot_failed', detail: err.message });
+    }
+  }
+
+  // ----- LIST: thread summary (no body) -----
+  let ownerId;
   if (user.role === 'sales') {
     ownerId = EMAIL_TO_OWNER_ID[user.email];
-    if (!ownerId) return res.status(403).json({ error: 'Your email is not mapped to a HubSpot owner' });
+    if (!ownerId) return res.status(403).json({ error: 'email not mapped' });
   } else {
     const requested = url.searchParams.get('ownerId');
     ownerId = (requested && OWNER_ID_TO_NAME[requested]) ? requested : '80532547';
@@ -54,7 +107,6 @@ export default async function handler(req, res) {
     'hs_email_post_send_status', 'hs_timestamp'
   ];
 
-  // Fetch all email engagements for the rep in window
   const all = [];
   let after;
   for (let page = 0; page < 5 && all.length < limit; page++) {
@@ -74,41 +126,27 @@ export default async function handler(req, res) {
     after = r.paging.next.after;
   }
 
-  // Group by thread for the UI
   const byThread = {};
   for (const e of all) {
     const p = e.properties || {};
     const tid = p.hs_email_thread_id || `single-${e.id}`;
     if (!byThread[tid]) {
       byThread[tid] = {
-        thread_id: tid,
-        emails: [],
-        latest_when: null,
-        latest_subject: '',
-        sent_count: 0,
-        reply_count: 0,
-        open_count: 0,
-        click_count: 0,
-        bounce_count: 0,
-        latest_status: null,
-        recipients: new Set(),
-        senders: new Set()
+        thread_id: tid, emails: [], latest_when: null, latest_subject: '',
+        sent_count: 0, reply_count: 0, open_count: 0, click_count: 0, bounce_count: 0,
+        latest_status: null, recipients: new Set(), senders: new Set()
       };
     }
     const t = byThread[tid];
     const isIncoming = (p.hs_email_direction || '').toUpperCase().includes('INCOMING');
     t.emails.push({
-      id: e.id,
-      subject: p.hs_email_subject || '(no subject)',
-      direction: p.hs_email_direction || null,
-      status: p.hs_email_status || null,
-      from: p.hs_email_from_email || null,
-      to: p.hs_email_to_email || null,
+      id: e.id, subject: p.hs_email_subject || '(no subject)',
+      direction: p.hs_email_direction || null, status: p.hs_email_status || null,
+      from: p.hs_email_from_email || null, to: p.hs_email_to_email || null,
       opens: parseInt(p.hs_email_open_count || '0', 10),
       clicks: parseInt(p.hs_email_click_count || '0', 10),
       bounced: !!p.hs_email_bounce_error_detail_message,
-      when: p.hs_timestamp || null,
-      is_incoming: isIncoming
+      when: p.hs_timestamp || null, is_incoming: isIncoming
     });
     if (isIncoming) {
       t.reply_count++;
@@ -128,17 +166,10 @@ export default async function handler(req, res) {
   }
 
   const threads = Object.values(byThread)
-    .map(t => ({
-      ...t,
-      recipients: Array.from(t.recipients),
-      senders: Array.from(t.senders)
-    }))
+    .map(t => ({ ...t, recipients: Array.from(t.recipients), senders: Array.from(t.senders) }))
     .sort((a, b) => new Date(b.latest_when || 0) - new Date(a.latest_when || 0));
 
   return res.status(200).json({
-    count_emails: all.length,
-    count_threads: threads.length,
-    days,
-    threads
+    count_emails: all.length, count_threads: threads.length, days, threads
   });
 }
