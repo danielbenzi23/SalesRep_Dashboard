@@ -1356,10 +1356,73 @@
 
       if (d.summary_error === 'no_summary_yet') {
         body += `<div style="background:#FAEEDA;color:#854F0B;padding:10px 12px;border-radius:8px;font-size:12px;margin-bottom:14px">
-          No Bridges are currently tracking this buyer. Set up a Bridge in Starbridge to start receiving signals for this account.
+          ⚠ No Bridges tracking this buyer for AI summary. Showing raw buyer attributes below.
         </div>`;
       } else if (d.summary_error) {
         body += `<div style="background:#FCEBEB;color:#791F1F;padding:10px 12px;border-radius:8px;font-size:12px;margin-bottom:14px">${escapeHtml(d.summary_error)}</div>`;
+      }
+
+      // Quick facts panel from attributes (works for any buyer)
+      const a = d.attributes || {};
+      const fmtAttr = (v) => {
+        if (v == null || v === '' || (Array.isArray(v) && !v.length)) return null;
+        if (Array.isArray(v)) return v.join(', ');
+        if (typeof v === 'object') return JSON.stringify(v);
+        return String(v);
+      };
+      const facts = [
+        ['Type',                  fmtAttr(a.Type)],
+        ['Location',              [fmtAttr(a.City), fmtAttr(a.StateCode)].filter(Boolean).join(', ') || null],
+        ['Website',               fmtAttr(a.Url)],
+        ['Mascot',                fmtAttr(a.HigherEdMascot)],
+        ['Enrollment (FTE)',      fmtAttr(a.HigherEdFullTimeEnrollment)],
+        ['Undergrad enrollment',  fmtAttr(a.HigherEdUndergradEnrollment)],
+        ['Graduate enrollment',   fmtAttr(a.HigherEdGraduationEnrollment)],
+        ['Public / private',      fmtAttr(a.HigherEdControlOfInstitution)],
+        ['Institution type',      fmtAttr(a.HigherEdInstitutionType)],
+        ['Graduation rate',       fmtAttr(a.HigherEdGraduationRate)],
+        ['Acceptance rate',       fmtAttr(a.HigherEdAcceptanceRate)],
+        ['Retention rate',        fmtAttr(a.HigherEdRetentionRate)],
+        ['Endowment',             fmtAttr(a.HigherEdEndowment)],
+        ['Full-time employees',   fmtAttr(a.HigherEdNumberOfFullTimeEmployees)],
+        ['Current SIS',           fmtAttr(a.Sis)],
+        ['SIS modernization',     fmtAttr(a.HigherEdSisModernizationStatus)],
+        ['LMS in use',            fmtAttr(a.LmsArray)],
+        ['Enrollment trend',      fmtAttr(a.EnrollmentTrend)],
+        ['YoY enrollment Δ',      fmtAttr(a.YoyChangeInEnrollment)],
+        ['Propensity to spend',   fmtAttr(a.PropensityToSpend) + (a.PropensityToSpendScore != null ? ` (${a.PropensityToSpendScore})` : '')],
+        ['AI adoption score',     fmtAttr(a.AiAdoptionScore)],
+        ['Startup friendliness',  fmtAttr(a.StartupFriendlinessScore)],
+        ['Procurement difficulty',fmtAttr(a.ProcurementHellScore)]
+      ].filter(([_, v]) => v != null && v !== '' && v !== 'null');
+
+      if (facts.length) {
+        body += `<div style="margin-bottom:18px">
+          <div style="font-size:13px;font-weight:500;margin-bottom:8px;color:#2D58A8">📊 Quick facts</div>
+          <div style="display:grid;grid-template-columns:repeat(2,1fr);gap:6px;font-size:12px">
+            ${facts.map(([k, v]) => `
+              <div style="display:flex;justify-content:space-between;padding:5px 8px;background:#fafafa;border-radius:6px">
+                <span style="color:#5F5E5A">${escapeHtml(k)}</span>
+                <span style="font-weight:500;text-align:right;max-width:60%;overflow:hidden;text-overflow:ellipsis">${escapeHtml(v)}</span>
+              </div>
+            `).join('')}
+          </div>
+        </div>`;
+      }
+
+      // Propensity to spend full summary if present
+      if (a.PropensityToSpendSummary) {
+        body += `<div style="margin-bottom:14px;padding:10px 12px;background:#fafafa;border-radius:8px;border-left:3px solid #185FA5">
+          <div style="font-size:11px;color:#5F5E5A;margin-bottom:4px">💰 Propensity to spend</div>
+          <div style="font-size:12px;color:#444;line-height:1.5">${escapeHtml(a.PropensityToSpendSummary)}</div>
+        </div>`;
+      }
+      // AI adoption summary
+      if (a.AiAdoptionSummary) {
+        body += `<div style="margin-bottom:14px;padding:10px 12px;background:#fafafa;border-radius:8px;border-left:3px solid #7F77DD">
+          <div style="font-size:11px;color:#5F5E5A;margin-bottom:4px">🤖 AI adoption</div>
+          <div style="font-size:12px;color:#444;line-height:1.5">${escapeHtml(a.AiAdoptionSummary)}</div>
+        </div>`;
       }
 
       // Summary sections
