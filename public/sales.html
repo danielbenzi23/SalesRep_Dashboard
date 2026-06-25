@@ -226,7 +226,11 @@
             <div class="panel-title">🎯 Top contacts by lead score</div>
             <div class="panel-sub" id="leads-sub">Compared to <span id="leads-compare-days-label">7</span> days ago</div>
           </div>
-          <div style="display:flex;gap:8px;align-items:center;font-size:12px">
+          <div style="display:flex;gap:8px;align-items:center;font-size:12px;flex-wrap:wrap;justify-content:flex-end">
+            <select id="leads-owner-scope" style="padding:6px 10px;border:0.5px solid rgba(0,0,0,0.15);border-radius:6px;font-size:12px">
+              <option value="mine">My leads only</option>
+              <option value="all">All reps</option>
+            </select>
             <label>Compare to:</label>
             <select id="leads-compare-days" style="padding:6px 10px;border:0.5px solid rgba(0,0,0,0.15);border-radius:6px;font-size:12px">
               <option value="7">7 days ago</option>
@@ -349,7 +353,15 @@
     sel.style.display = '';
     sel.onchange = async () => {
       salesData = await fetchData(sel.value);
+      // Invalidate per-rep caches
+      leadsCache = null;
+      leadsCacheDays = null;
+      emailThreadsCache = null;
       renderAll();
+      // Reload active per-rep tab
+      const activeTab = document.querySelector('.tab.active')?.dataset.tab;
+      if (activeTab === 'leads') loadLeads();
+      if (activeTab === 'emails') loadEmails();
     };
   }
 
@@ -884,7 +896,15 @@
     }
     document.getElementById('leads-table').innerHTML = '<div class="loading">Loading top 100 contacts… (this takes ~5-10s — pulling property history)</div>';
     try {
-      const r = await fetch(`/api/lead-scoring?limit=100&days=${days}`);
+      const ownerScope = document.getElementById('leads-owner-scope')?.value;
+      // Default: filter by current rep. If admin selected "all", omit ownerId.
+      let ownerParam = '';
+      if (ownerScope === 'all') {
+        ownerParam = '&ownerId=all';
+      } else if (salesData?.rep?.ownerId) {
+        ownerParam = `&ownerId=${salesData.rep.ownerId}`;
+      }
+      const r = await fetch(`/api/lead-scoring?limit=100&days=${days}${ownerParam}`);
       if (!r.ok) {
         const j = await r.json().catch(() => ({}));
         document.getElementById('leads-table').innerHTML = `<div style="color:#791F1F">Error: ${j.error || r.status} ${j.detail ? '· ' + j.detail : ''}</div>`;
@@ -893,6 +913,14 @@
       leadsCache = await r.json();
       leadsCacheDays = days;
       document.getElementById('leads-compare-days-label').textContent = days;
+      // Update subtitle to show what's being filtered
+      const sub = document.getElementById('leads-sub');
+      if (sub) {
+        const scope = leadsCache.filtered_by
+          ? `${leadsCache.filtered_by.name}'s leads only`
+          : 'All reps';
+        sub.innerHTML = `${scope} · compared to <span id="leads-compare-days-label">${days}</span> days ago`;
+      }
       renderLeads();
     } catch (e) {
       document.getElementById('leads-table').innerHTML = `<div style="color:#791F1F">Network error: ${e.message}</div>`;
@@ -1054,6 +1082,10 @@
   document.getElementById('leads-compare-days')?.addEventListener('change', (e) => {
     leadsCache = null;
     loadLeads(parseInt(e.target.value, 10));
+  });
+  document.getElementById('leads-owner-scope')?.addEventListener('change', () => {
+    leadsCache = null;
+    loadLeads();
   });
 
   // Refresh
