@@ -103,6 +103,7 @@
     <div class="tab" data-tab="activity">My activity</div>
     <div class="tab" data-tab="emails">Emails</div>
     <div class="tab" data-tab="leads">Leads</div>
+    <div class="tab" data-tab="signals">Signals</div>
     <div class="tab" data-tab="conversations">Conversations</div>
     <div class="tab" data-tab="goals">My goals</div>
     <div class="tab" data-tab="recent">Recent</div>
@@ -151,6 +152,14 @@
           <div class="panel-title">🎙 Recent meeting insights</div>
           <div class="panel-sub">Pulled from Confluence transcripts · click to analyze sentiment</div>
           <div id="recent-meetings" class="loading">Loading…</div>
+        </div>
+      </div>
+
+      <div style="margin-top: 14px;">
+        <div class="panel">
+          <div class="panel-title">📹 Recent Zoom meetings</div>
+          <div class="panel-sub">Last 30 days · click to see AI Companion summary + recording</div>
+          <div id="recent-zoom-meetings" class="loading">Loading…</div>
         </div>
       </div>
     </div>
@@ -239,6 +248,56 @@
       </div>
       <div class="panel">
         <div id="leads-table" class="loading">Loading top contacts…</div>
+      </div>
+    </div>
+
+    <!-- SIGNALS (Starbridge) -->
+    <div data-panel="signals" style="display:none">
+      <div class="panel" style="margin-bottom:14px">
+        <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px;flex-wrap:wrap">
+          <div>
+            <div class="panel-title">⚡ Buying signals (Starbridge)</div>
+            <div class="panel-sub">RFPs, meetings, purchases, job changes from public-sector buyers</div>
+          </div>
+          <div style="display:flex;gap:8px;align-items:center;font-size:12px;flex-wrap:wrap">
+            <select id="signals-period" style="padding:6px 10px;border:0.5px solid rgba(0,0,0,0.15);border-radius:6px;font-size:12px">
+              <option value="LastSevenDays">Last 7 days</option>
+              <option value="LastThirtyDays" selected>Last 30 days</option>
+              <option value="LastSixtyDays">Last 60 days</option>
+              <option value="LastThreeMonths">Last 3 months</option>
+              <option value="LastSixMonths">Last 6 months</option>
+            </select>
+            <select id="signals-sort" style="padding:6px 10px;border:0.5px solid rgba(0,0,0,0.15);border-radius:6px;font-size:12px">
+              <option value="Hotness" selected>Hottest first</option>
+              <option value="Date">Newest first</option>
+            </select>
+          </div>
+        </div>
+        <div style="display:flex;gap:6px;margin-top:10px;flex-wrap:wrap" id="signals-filter-chips">
+          <span class="chip" data-type="" style="cursor:pointer;padding:5px 10px;border-radius:14px;font-size:11px;border:0.5px solid rgba(0,0,0,0.15);background:#2D58A8;color:#fff">All</span>
+          <span class="chip" data-type="RFP" style="cursor:pointer;padding:5px 10px;border-radius:14px;font-size:11px;border:0.5px solid rgba(0,0,0,0.15)">📋 RFP</span>
+          <span class="chip" data-type="Meeting" style="cursor:pointer;padding:5px 10px;border-radius:14px;font-size:11px;border:0.5px solid rgba(0,0,0,0.15)">🎙 Meeting</span>
+          <span class="chip" data-type="Purchase" style="cursor:pointer;padding:5px 10px;border-radius:14px;font-size:11px;border:0.5px solid rgba(0,0,0,0.15)">💰 Purchase</span>
+          <span class="chip" data-type="JobChange" style="cursor:pointer;padding:5px 10px;border-radius:14px;font-size:11px;border:0.5px solid rgba(0,0,0,0.15)">👤 Job change</span>
+          <span class="chip" data-type="Conference" style="cursor:pointer;padding:5px 10px;border-radius:14px;font-size:11px;border:0.5px solid rgba(0,0,0,0.15)">📅 Conference</span>
+          <span class="chip" data-type="Contact" style="cursor:pointer;padding:5px 10px;border-radius:14px;font-size:11px;border:0.5px solid rgba(0,0,0,0.15)">📇 Contact</span>
+          <span class="chip" data-type="Signal" style="cursor:pointer;padding:5px 10px;border-radius:14px;font-size:11px;border:0.5px solid rgba(0,0,0,0.15)">⚡ Signal</span>
+        </div>
+      </div>
+
+      <div class="panel" style="margin-bottom:14px">
+        <div class="panel-title">🔍 Look up a buyer</div>
+        <div class="panel-sub">Search any public-sector buyer (university, school district, city, etc.) to get AI buyer summary</div>
+        <div style="display:flex;gap:8px;margin-top:8px">
+          <input type="text" id="sb-buyer-search" placeholder="Search by name… e.g. Roosevelt University" style="flex:1;padding:8px 12px;border:0.5px solid rgba(0,0,0,0.15);border-radius:6px;font-size:13px" />
+          <button id="sb-buyer-search-btn" style="padding:6px 14px;background:#2D58A8;color:#fff;border:none;border-radius:6px;font-size:13px;cursor:pointer">Search</button>
+        </div>
+        <div id="sb-buyer-results" style="margin-top:8px"></div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-title">Signal feed</div>
+        <div id="signals-list" class="loading">Loading…</div>
       </div>
     </div>
 
@@ -747,6 +806,116 @@
     }).join('');
   }
 
+  async function renderZoomMeetings(targetId, limit) {
+    const target = document.getElementById(targetId);
+    target.innerHTML = '<div class="loading">Loading Zoom meetings…</div>';
+    try {
+      const ownerParam = salesData?.rep?.ownerId ? `&ownerId=${salesData.rep.ownerId}` : '';
+      const r = await fetch(`/api/zoom-meetings?days=30&limit=${limit}${ownerParam}`);
+      if (!r.ok) {
+        const j = await r.json().catch(() => ({}));
+        target.innerHTML = `<div style="color:#888780;font-size:12px">Zoom unavailable: ${j.error || r.status}</div>`;
+        return;
+      }
+      const data = await r.json();
+      if (data.warning) {
+        target.innerHTML = `<div style="color:#888780;font-size:12px">${escapeHtml(data.warning)}</div>`;
+        return;
+      }
+      if (!data.meetings.length) {
+        target.innerHTML = '<div style="color:#888780;font-size:13px">No Zoom meetings in the last 30 days</div>';
+        return;
+      }
+      target.innerHTML = data.meetings.slice(0, limit).map(m => `
+        <div class="transcript-card" onclick="openZoomSummary('${m.uuid || m.id}','${m.id}','${escapeHtml(m.topic || '')}')">
+          <div style="display:flex;justify-content:space-between;align-items:center">
+            <div class="transcript-title">${escapeHtml(m.topic || '(no topic)')}</div>
+            <span class="meta">${m.duration ? m.duration + ' min' : ''}</span>
+          </div>
+          <div class="transcript-meta">${fmtDate(m.start_time)} · host: ${escapeHtml(m.host_email)}</div>
+        </div>
+      `).join('');
+    } catch (e) {
+      target.innerHTML = `<div style="color:#791F1F;font-size:12px">Error: ${escapeHtml(e.message)}</div>`;
+    }
+  }
+
+  async function openZoomSummary(uuid, id, topic) {
+    const modal = document.getElementById('modal-bg');
+    document.getElementById('modal-title').textContent = topic || 'Zoom meeting';
+    document.getElementById('modal-body').innerHTML = '<div class="loading">Fetching Zoom AI summary…</div>';
+    modal.classList.add('show');
+    try {
+      const params = uuid ? `meeting_uuid=${encodeURIComponent(uuid)}` : `meeting_id=${id}`;
+      const extra  = (uuid && id) ? `&meeting_id=${id}` : '';
+      const r = await fetch(`/api/zoom-meeting-summary?${params}${extra}`);
+      if (!r.ok) {
+        const j = await r.json().catch(() => ({}));
+        document.getElementById('modal-body').innerHTML = `<div style="color:#791F1F">Error: ${j.error || r.status}</div>`;
+        return;
+      }
+      const d = await r.json();
+
+      let body = '';
+      // Header info
+      body += `<div style="font-size:12px;color:#5F5E5A;margin-bottom:14px">
+        ${d.start_time ? `<div>📅 ${fmtDate(d.start_time)}${d.duration ? ` · ${d.duration} min` : ''}</div>` : ''}
+        ${d.host_email ? `<div>👤 Host: ${escapeHtml(d.host_email)}</div>` : ''}
+      </div>`;
+
+      if (d.summary_error === 'no_summary_available') {
+        body += `<div style="background:#FAEEDA;color:#854F0B;padding:10px 12px;border-radius:8px;font-size:12px;margin-bottom:14px">
+          No AI Companion summary available for this meeting (either AI Companion wasn't enabled when it ran, or the summary is still processing).
+        </div>`;
+      } else if (d.summary_error === 'ai_companion_not_enabled') {
+        body += `<div style="background:#FCEBEB;color:#791F1F;padding:10px 12px;border-radius:8px;font-size:12px;margin-bottom:14px">
+          AI Companion not enabled on this Zoom account. Enable it in Zoom settings to get auto-generated summaries.
+        </div>`;
+      } else if (d.summary_error) {
+        body += `<div style="background:#FCEBEB;color:#791F1F;padding:10px 12px;border-radius:8px;font-size:12px;margin-bottom:14px">
+          ${escapeHtml(d.summary_error)}
+        </div>`;
+      }
+
+      if (d.summary_title) {
+        body += `<div style="font-weight:500;margin-bottom:8px">${escapeHtml(d.summary_title)}</div>`;
+      }
+      if (d.summary_overview) {
+        body += `<div style="font-size:13px;color:#1A1A1A;margin-bottom:14px;line-height:1.5">${escapeHtml(d.summary_overview)}</div>`;
+      }
+      if (Array.isArray(d.summary_details) && d.summary_details.length) {
+        body += `<div style="margin-bottom:14px">
+          <div style="font-size:12px;color:#5F5E5A;margin-bottom:6px">Key points</div>
+          ${d.summary_details.map(s => `
+            <div style="border-left:3px solid #2D58A8;padding:6px 10px;margin-bottom:6px;font-size:12px">
+              ${s.label ? `<strong style="font-weight:500">${escapeHtml(s.label)}:</strong> ` : ''}
+              ${escapeHtml(s.summary || s.text || '')}
+            </div>
+          `).join('')}
+        </div>`;
+      }
+      if (Array.isArray(d.next_steps) && d.next_steps.length) {
+        body += `<div style="margin-bottom:14px">
+          <div style="font-size:12px;color:#5F5E5A;margin-bottom:6px">Next steps</div>
+          ${d.next_steps.map(s => `<div class="row"><span>• ${escapeHtml(s.summary || s.text || s)}</span></div>`).join('')}
+        </div>`;
+      }
+      if (Array.isArray(d.recording_files) && d.recording_files.length) {
+        const playable = d.recording_files.find(f => f.play_url);
+        body += `<div style="margin-top:14px;padding-top:14px;border-top:0.5px solid rgba(0,0,0,0.08)">
+          <div style="font-size:12px;color:#5F5E5A;margin-bottom:6px">Recording</div>
+          ${playable ? `<a href="${playable.play_url}" target="_blank" style="font-size:12px;color:#2D58A8">▶ Play in Zoom ↗</a>` : ''}
+          ${d.recording_share_url ? ` · <a href="${d.recording_share_url}" target="_blank" style="font-size:12px;color:#2D58A8">Share link ↗</a>` : ''}
+        </div>`;
+      }
+
+      document.getElementById('modal-body').innerHTML = body || '<div style="color:#888780">No data returned</div>';
+    } catch (e) {
+      document.getElementById('modal-body').innerHTML = `<div style="color:#791F1F">Error: ${e.message}</div>`;
+    }
+  }
+  window.openZoomSummary = openZoomSummary;
+
   function renderAll() {
     if (!salesData) return;
     document.getElementById('rep-sub').textContent = salesData.rep.name + ' · ' + salesData.rep.email;
@@ -758,6 +927,7 @@
     renderGoals();
     renderRecent();
     renderTranscripts('recent-meetings', 5);
+    renderZoomMeetings('recent-zoom-meetings', 5);
   }
 
   // -------- EMAILS TAB --------
@@ -1048,6 +1218,195 @@
   }
   window.openContactDeals = openContactDeals;
 
+  // -------- STARBRIDGE SIGNALS TAB --------
+  let signalsCache = null;
+  let signalsFilterType = '';
+
+  const SIGNAL_TYPE_META = {
+    RFP:         { icon: '📋', color: '#2D58A8' },
+    Meeting:     { icon: '🎙', color: '#1D9E75' },
+    Purchase:    { icon: '💰', color: '#BA7517' },
+    JobChange:   { icon: '👤', color: '#7F77DD' },
+    Conference:  { icon: '📅', color: '#185FA5' },
+    Buyer:       { icon: '🏛',  color: '#5F5E5A' },
+    Contact:     { icon: '📇', color: '#5F5E5A' },
+    Signal:      { icon: '⚡', color: '#854F0B' }
+  };
+
+  async function loadSignals() {
+    const period = document.getElementById('signals-period').value;
+    const sort = document.getElementById('signals-sort').value;
+    const filter = signalsFilterType;
+    const target = document.getElementById('signals-list');
+    target.innerHTML = '<div class="loading">Loading Starbridge signals…</div>';
+    try {
+      const params = new URLSearchParams({ period, sort, pageSize: '50' });
+      if (filter) params.set('filterType', filter);
+      const r = await fetch(`/api/starbridge-signals?${params}`);
+      if (!r.ok) {
+        const j = await r.json().catch(() => ({}));
+        target.innerHTML = `<div style="color:#791F1F;font-size:13px">Error: ${j.error || r.status} ${j.detail ? '· ' + j.detail : ''}</div>`;
+        return;
+      }
+      const data = await r.json();
+      signalsCache = data;
+      renderSignals(data);
+    } catch (e) {
+      target.innerHTML = `<div style="color:#791F1F;font-size:13px">Network error: ${e.message}</div>`;
+    }
+  }
+
+  function renderSignals(data) {
+    const results = data.result || [];
+    const target = document.getElementById('signals-list');
+    if (!results.length) {
+      target.innerHTML = '<div style="color:#888780;font-size:13px;padding:20px;text-align:center">No signals found for this filter</div>';
+      return;
+    }
+    target.innerHTML = results.map(s => {
+      const meta = SIGNAL_TYPE_META[s.bridge.filterType] || { icon: '·', color: '#888' };
+      const rowName = s.row.name || '(no name)';
+      const buyerLink = s.row.buyerId
+        ? `<a href="#" onclick="openBuyerSummary('${s.row.buyerId}','${escapeHtml(rowName)}');return false" style="color:#2D58A8;font-size:11px">View buyer ↗</a>`
+        : '';
+      // Extract a few notable columns to preview
+      const cols = s.row.columns || {};
+      const previewBits = [];
+      for (const [colId, val] of Object.entries(cols).slice(0, 3)) {
+        const v = val?.value;
+        if (v == null || v === '') continue;
+        if (typeof v === 'string') previewBits.push(escapeHtml(v.slice(0, 100)));
+        else if (typeof v === 'number') previewBits.push(String(v));
+      }
+      return `<div class="transcript-card" style="cursor:default">
+        <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px">
+          <div style="flex:1;min-width:0">
+            <div style="display:flex;align-items:center;gap:6px">
+              <span style="color:${meta.color}">${meta.icon}</span>
+              <span class="badge neutral" style="font-size:10px">${escapeHtml(s.bridge.name)}</span>
+            </div>
+            <div class="transcript-title" style="margin-top:4px">${escapeHtml(rowName)}</div>
+            ${previewBits.length ? `<div style="font-size:12px;color:#444;margin-top:4px;line-height:1.4">${previewBits.join(' · ')}</div>` : ''}
+            <div class="transcript-meta" style="margin-top:4px">${ago(s.row.updatedAt)} · ${escapeHtml(s.row.status)} ${buyerLink ? '· ' + buyerLink : ''}</div>
+          </div>
+        </div>
+      </div>`;
+    }).join('');
+  }
+
+  async function searchBuyer() {
+    const q = document.getElementById('sb-buyer-search').value.trim();
+    const target = document.getElementById('sb-buyer-results');
+    if (q.length < 2) { target.innerHTML = '<div style="color:#888780;font-size:12px">Type at least 2 characters</div>'; return; }
+    target.innerHTML = '<div class="loading">Searching…</div>';
+    try {
+      const r = await fetch(`/api/starbridge-buyer-search?q=${encodeURIComponent(q)}`);
+      if (!r.ok) {
+        const j = await r.json().catch(() => ({}));
+        target.innerHTML = `<div style="color:#791F1F;font-size:12px">Error: ${j.error || r.status}</div>`;
+        return;
+      }
+      const data = await r.json();
+      const buyers = data.buyers || [];
+      if (!buyers.length) {
+        target.innerHTML = '<div style="color:#888780;font-size:13px">No buyers found</div>';
+        return;
+      }
+      target.innerHTML = buyers.slice(0, 10).map(b => `
+        <div class="transcript-card" onclick="openBuyerSummary('${b.id}','${escapeHtml(b.name)}')">
+          <div style="display:flex;justify-content:space-between">
+            <div>
+              <div class="transcript-title">${escapeHtml(b.name)}</div>
+              <div class="transcript-meta">${escapeHtml(b.type || '—')}${b.stateCode ? ' · ' + escapeHtml(b.stateCode) : ''}${b.countryCode ? ' · ' + escapeHtml(b.countryCode) : ''}</div>
+            </div>
+            ${b.url ? `<a href="${b.url}" target="_blank" onclick="event.stopPropagation()" style="font-size:11px;color:#5F5E5A">site ↗</a>` : ''}
+          </div>
+        </div>
+      `).join('');
+    } catch (e) {
+      target.innerHTML = `<div style="color:#791F1F;font-size:12px">Error: ${e.message}</div>`;
+    }
+  }
+  window.searchBuyer = searchBuyer;
+
+  async function openBuyerSummary(buyerId, buyerName) {
+    const modal = document.getElementById('modal-bg');
+    document.getElementById('modal-title').textContent = buyerName || 'Buyer summary';
+    document.getElementById('modal-body').innerHTML = '<div class="loading">Generating AI buyer summary… (may take a few seconds first time)</div>';
+    modal.classList.add('show');
+    try {
+      const r = await fetch(`/api/starbridge-buyer-summary?buyerId=${encodeURIComponent(buyerId)}`);
+      if (!r.ok) {
+        const j = await r.json().catch(() => ({}));
+        document.getElementById('modal-body').innerHTML = `<div style="color:#791F1F">Error: ${j.error || r.status}</div>`;
+        return;
+      }
+      const d = await r.json();
+
+      let body = '';
+
+      // Score
+      if (d.summary?.score != null) {
+        body += `<div style="display:flex;align-items:center;gap:10px;margin-bottom:14px">
+          <span style="font-size:11px;color:#5F5E5A">Account score:</span>
+          <span style="font-size:18px;font-weight:500">${d.summary.score}</span>
+          ${d.summary.scoreReasoning ? `<span style="font-size:11px;color:#888780">· ${escapeHtml(d.summary.scoreReasoning)}</span>` : ''}
+        </div>`;
+      }
+
+      if (d.summary_error === 'no_summary_yet') {
+        body += `<div style="background:#FAEEDA;color:#854F0B;padding:10px 12px;border-radius:8px;font-size:12px;margin-bottom:14px">
+          No Bridges are currently tracking this buyer. Set up a Bridge in Starbridge to start receiving signals for this account.
+        </div>`;
+      } else if (d.summary_error) {
+        body += `<div style="background:#FCEBEB;color:#791F1F;padding:10px 12px;border-radius:8px;font-size:12px;margin-bottom:14px">${escapeHtml(d.summary_error)}</div>`;
+      }
+
+      // Summary sections
+      const renderSection = (label, sec) => {
+        if (!sec || !sec.sections?.length) return '';
+        return `<div style="margin-bottom:18px">
+          <div style="font-size:13px;font-weight:500;margin-bottom:6px;color:#2D58A8">${label}</div>
+          ${sec.intro ? `<div style="font-size:12px;color:#5F5E5A;margin-bottom:8px;line-height:1.5">${escapeHtml(sec.intro)}</div>` : ''}
+          ${sec.sections.map(x => `
+            <div style="border-left:3px solid #185FA5;padding:6px 12px;margin-bottom:8px;background:#fafafa;border-radius:0 6px 6px 0">
+              <div style="font-weight:500;font-size:12px;margin-bottom:4px">${escapeHtml(x.title)}</div>
+              <div style="font-size:12px;color:#444;line-height:1.5;white-space:pre-wrap">${escapeHtml(x.text)}</div>
+            </div>
+          `).join('')}
+        </div>`;
+      };
+
+      if (d.summary?.summary) {
+        const s = d.summary.summary;
+        body += renderSection('What\'s recent', s.whatsRecent);
+        body += renderSection('The bigger picture', s.theBiggerPicture);
+        body += renderSection('Areas for deeper discovery', s.areasForDeeperDiscovery);
+      }
+
+      // Recent signals
+      const sigs = d.signals?.result || [];
+      if (sigs.length) {
+        body += `<div style="margin-top:18px;padding-top:14px;border-top:0.5px solid rgba(0,0,0,0.08)">
+          <div style="font-size:12px;color:#5F5E5A;margin-bottom:8px">Recent signals (${sigs.length})</div>
+          ${sigs.slice(0, 15).map(s => {
+            const meta = SIGNAL_TYPE_META[s.bridge.filterType] || { icon: '·', color: '#888' };
+            return `<div style="padding:6px 0;border-bottom:0.5px solid rgba(0,0,0,0.05);font-size:12px">
+              <span style="color:${meta.color}">${meta.icon}</span>
+              <strong style="font-weight:500">${escapeHtml(s.bridge.name)}</strong> · ${escapeHtml(s.row.name || '(no name)')}
+              <div class="meta" style="margin-top:2px">${ago(s.row.updatedAt)}</div>
+            </div>`;
+          }).join('')}
+        </div>`;
+      }
+
+      document.getElementById('modal-body').innerHTML = body || '<div style="color:#888780">No data returned</div>';
+    } catch (e) {
+      document.getElementById('modal-body').innerHTML = `<div style="color:#791F1F">Error: ${e.message}</div>`;
+    }
+  }
+  window.openBuyerSummary = openBuyerSummary;
+
   // Tabs
   document.querySelectorAll('.tab').forEach(t => {
     t.onclick = () => {
@@ -1060,7 +1419,27 @@
       if (target === 'conversations') renderTranscripts('all-transcripts', 50);
       if (target === 'emails') loadEmails();
       if (target === 'leads') loadLeads();
+      if (target === 'signals') loadSignals();
     };
+  });
+
+  // Wire up signals tab controls
+  document.getElementById('signals-period')?.addEventListener('change', () => loadSignals());
+  document.getElementById('signals-sort')?.addEventListener('change', () => loadSignals());
+  document.querySelectorAll('#signals-filter-chips .chip').forEach(chip => {
+    chip.addEventListener('click', () => {
+      signalsFilterType = chip.dataset.type || '';
+      // visual selected state
+      document.querySelectorAll('#signals-filter-chips .chip').forEach(c => {
+        if (c === chip) { c.style.background = '#2D58A8'; c.style.color = '#fff'; }
+        else { c.style.background = ''; c.style.color = ''; }
+      });
+      loadSignals();
+    });
+  });
+  document.getElementById('sb-buyer-search-btn')?.addEventListener('click', searchBuyer);
+  document.getElementById('sb-buyer-search')?.addEventListener('keydown', e => {
+    if (e.key === 'Enter') searchBuyer();
   });
 
   // Wire up email + leads filters
