@@ -80,7 +80,8 @@ export default async function handler(req, res) {
       properties: [
         'firstname', 'lastname', 'email', 'company', SCORE_PROP,
         'lifecyclestage', 'jobtitle', 'hubspot_owner_id', 'hs_lead_status',
-        'lastmodifieddate', 'notes_last_contacted', 'createdate'
+        'lastmodifieddate', 'notes_last_contacted', 'createdate',
+        'num_associated_deals'
       ],
       limit
     });
@@ -171,6 +172,7 @@ export default async function handler(req, res) {
       jobtitle: c.properties.jobtitle || '',
       lead_status: c.properties.hs_lead_status || '',
       tier: tierFromScore(current),
+      deal_count: parseInt(c.properties.num_associated_deals || '0', 10),
       owner_id: c.properties.hubspot_owner_id || null,
       owner: OWNER_ID_TO_NAME[c.properties.hubspot_owner_id] || null,
       last_activity: c.properties.notes_last_contacted || c.properties.lastmodifieddate || null,
