@@ -1737,9 +1737,10 @@
     }
     document.getElementById('mi-status').style.display = 'block';
     const debug = [];
-    if (d.total_transcripts != null) debug.push(`${d.total_transcripts} transcripts in Confluence`);
-    if (d.total_analyzed_by_label != null) debug.push(`${d.total_analyzed_by_label} labeled analyzed`);
-    debug.push(`${d.total_analyzed} insights aggregated`);
+    if (d.total_transcripts != null) debug.push(`${d.total_transcripts} transcripts`);
+    if (d.total_insight_pages_found != null) debug.push(`${d.total_insight_pages_found} insight pages found`);
+    if (d.total_analyzed_by_label != null) debug.push(`${d.total_analyzed_by_label} labeled`);
+    debug.push(`${d.total_analyzed} aggregated`);
     document.getElementById('mi-status').innerHTML = `<span style="color:#5F5E5A;font-size:11px">${debug.join(' · ')}</span>`;
     document.getElementById('mi-content').style.display = 'block';
 
