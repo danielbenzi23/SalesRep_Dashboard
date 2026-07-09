@@ -9,12 +9,15 @@ import {
   fetchPage,
   htmlToText,
   findInsightChildPage,
+  findAllInsightPages,
   createInsightChildPage,
   updateInsightChildPage,
   addLabels,
   extractInsightJson,
   ANALYZED_LABEL
 } from '../lib/confluence.js';
+
+export const config = { maxDuration: 60 };
 
 const SYSTEM_PROMPT = `You are an expert sales-call analyst for DegreeSight, a B2B SaaS company that sells online learning infrastructure to universities, bootcamps, and continuing-education programs.
 
@@ -94,9 +97,91 @@ export default async function handler(req, res) {
   const user = cm ? await verifyAuthCookie(cm[1], token) : null;
   if (!user) return res.status(401).json({ error: 'Not authenticated' });
 
-  // GET → list transcripts
+  // GET → list transcripts OR analytics
   if (req.method === 'GET') {
     const url = new URL(req.url, `http://${req.headers.host || 'x'}`);
+    const action = url.searchParams.get('action');
+
+    // ===== ANALYTICS: aggregate all Claude Insights across the space =====
+    if (action === 'analytics') {
+      let pages;
+      try { pages = await findAllInsightPages(200); }
+      catch (e) { return res.status(502).json({ error: 'confluence_failed', detail: e.message }); }
+
+      const insights = pages
+        .map(p => {
+          const parsed = extractInsightJson(p.body?.storage?.value);
+          return parsed ? { ...parsed, _createdAt: p.history?.createdDate || null } : null;
+        })
+        .filter(Boolean);
+
+      const total = insights.length;
+      const sentimentCounts = { positive: 0, neutral: 0, at_risk: 0, negative: 0 };
+      const stageSignals = {};
+      const keywordCounts = {};
+      const riskCounts = {};
+      const competitorCounts = {};
+      const objectionCounts = {};
+      let budgetDiscussedCount = 0, timelineCount = 0, decisionMakerCount = 0;
+      let sentimentScoreSum = 0, sentimentScoreCount = 0;
+
+      for (const i of insights) {
+        if (sentimentCounts[i.sentiment] !== undefined) sentimentCounts[i.sentiment]++;
+        if (typeof i.sentiment_score === 'number') { sentimentScoreSum += i.sentiment_score; sentimentScoreCount++; }
+        if (i.stage_signal) stageSignals[i.stage_signal] = (stageSignals[i.stage_signal] || 0) + 1;
+        (i.keywords || []).forEach(k => { const kk = String(k).trim().toLowerCase(); if (kk) keywordCounts[kk] = (keywordCounts[kk] || 0) + 1; });
+        (i.risk_flags || []).forEach(r => { const rr = String(r).trim(); if (rr) riskCounts[rr] = (riskCounts[rr] || 0) + 1; });
+        const c = i.deal_signals?.competitor_mentioned;
+        if (c && c.trim()) competitorCounts[c.trim()] = (competitorCounts[c.trim()] || 0) + 1;
+        (i.deal_signals?.objections || []).forEach(o => { const oo = String(o).trim(); if (oo) objectionCounts[oo] = (objectionCounts[oo] || 0) + 1; });
+        if (i.deal_signals?.budget_discussed) budgetDiscussedCount++;
+        if (i.deal_signals?.timeline_mentioned) timelineCount++;
+        if (i.deal_signals?.decision_maker_engaged) decisionMakerCount++;
+      }
+
+      const topN = (obj, n = 20) => Object.entries(obj).sort((a, b) => b[1] - a[1]).slice(0, n).map(([k, v]) => ({ label: k, count: v }));
+
+      // At-risk / negative meetings for quick action list
+      const atRisk = insights
+        .filter(i => i.sentiment === 'at_risk' || i.sentiment === 'negative')
+        .sort((a, b) => new Date(b._createdAt || b.analyzed_at || 0) - new Date(a._createdAt || a.analyzed_at || 0))
+        .slice(0, 15)
+        .map(i => ({
+          title: i.meeting_title || null,
+          date: i.meeting_date || null,
+          sentiment: i.sentiment,
+          sentiment_score: i.sentiment_score,
+          summary: i.summary,
+          source_url: i.source_url || null,
+          risk_flags: i.risk_flags || [],
+          next_step: i.deal_signals?.next_step_committed || null
+        }));
+
+      // Open action items across all analyzed meetings
+      const allActionItems = insights.flatMap(i =>
+        (i.action_items || []).map(a => ({ ...a, meeting_title: i.meeting_title, source_url: i.source_url }))
+      ).slice(0, 30);
+
+      return res.status(200).json({
+        total_analyzed: total,
+        avg_sentiment_score: sentimentScoreCount > 0 ? sentimentScoreSum / sentimentScoreCount : 0,
+        sentiment_distribution: sentimentCounts,
+        stage_signals: stageSignals,
+        deal_signals_pct: {
+          budget_discussed: total > 0 ? budgetDiscussedCount / total : 0,
+          timeline_mentioned: total > 0 ? timelineCount / total : 0,
+          decision_maker_engaged: total > 0 ? decisionMakerCount / total : 0
+        },
+        top_keywords: topN(keywordCounts, 30),
+        top_risks: topN(riskCounts, 15),
+        top_competitors: topN(competitorCounts, 15),
+        top_objections: topN(objectionCounts, 15),
+        at_risk_meetings: atRisk,
+        recent_action_items: allActionItems
+      });
+    }
+
+    // ===== LIST transcripts (with pagination) =====
     const limit = Math.min(parseInt(url.searchParams.get('limit') || '50', 10), 100);
     let pages;
     try { pages = await listChildPages(transcriptsParentId(), { limit }); }
