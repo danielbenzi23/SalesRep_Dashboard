@@ -341,8 +341,13 @@
     <!-- MEETING INTEL -->
     <div data-panel="meeting-intel" style="display:none">
       <div class="panel" style="margin-bottom:14px">
-        <div class="panel-title">🧠 Meeting intelligence dashboard</div>
-        <div class="panel-sub">Aggregates insights from all analyzed Confluence transcripts</div>
+        <div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:8px">
+          <div>
+            <div class="panel-title">🧠 Meeting intelligence dashboard</div>
+            <div class="panel-sub">Aggregates insights from all analyzed Confluence transcripts</div>
+          </div>
+          <button id="mi-refresh" style="padding:6px 12px;background:#fff;border:0.5px solid rgba(0,0,0,0.15);border-radius:6px;font-size:12px;cursor:pointer;font-family:inherit">↻ Refresh</button>
+        </div>
         <div id="mi-status" class="loading" style="margin-top:8px">Loading aggregations…</div>
       </div>
       <div id="mi-content" style="display:none">
@@ -1709,25 +1714,33 @@
 
   // -------- MEETING INTEL DASHBOARD --------
   let miCache = null;
-  async function loadMeetingIntel() {
-    if (miCache) { renderMeetingIntel(miCache); return; }
-    document.getElementById('mi-status').textContent = 'Loading… (fetching all Claude Insights from Confluence)';
+  async function loadMeetingIntel(force) {
+    if (miCache && !force) { renderMeetingIntel(miCache); return; }
+    const st = document.getElementById('mi-status');
+    st.style.display = 'block';
+    st.textContent = 'Loading… (fetching all Claude Insights from Confluence, may take 10-30s)';
     try {
       const r = await fetch('/api/transcripts?action=analytics');
       if (!r.ok) throw new Error(r.status);
       miCache = await r.json();
       renderMeetingIntel(miCache);
     } catch (e) {
-      document.getElementById('mi-status').textContent = 'Error: ' + e.message;
+      st.textContent = 'Error: ' + e.message;
     }
   }
+  document.getElementById('mi-refresh')?.addEventListener('click', () => loadMeetingIntel(true));
 
   function renderMeetingIntel(d) {
     if (!d.total_analyzed) {
       document.getElementById('mi-status').textContent = 'No analyzed meetings yet. Analyze transcripts in the Conversations tab first.';
       return;
     }
-    document.getElementById('mi-status').style.display = 'none';
+    document.getElementById('mi-status').style.display = 'block';
+    const debug = [];
+    if (d.total_transcripts != null) debug.push(`${d.total_transcripts} transcripts in Confluence`);
+    if (d.total_analyzed_by_label != null) debug.push(`${d.total_analyzed_by_label} labeled analyzed`);
+    debug.push(`${d.total_analyzed} insights aggregated`);
+    document.getElementById('mi-status').innerHTML = `<span style="color:#5F5E5A;font-size:11px">${debug.join(' · ')}</span>`;
     document.getElementById('mi-content').style.display = 'block';
 
     document.getElementById('mi-total').textContent = d.total_analyzed;
