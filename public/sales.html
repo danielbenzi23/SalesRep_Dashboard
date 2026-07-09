@@ -104,7 +104,9 @@
     <div class="tab" data-tab="emails">Emails</div>
     <div class="tab" data-tab="leads">Leads</div>
     <div class="tab" data-tab="signals">Signals</div>
+    <div class="tab" data-tab="buyer-intel">Buyer intel</div>
     <div class="tab" data-tab="conversations">Conversations</div>
+    <div class="tab" data-tab="meeting-intel">Meeting intel</div>
     <div class="tab" data-tab="goals">My goals</div>
     <div class="tab" data-tab="recent">Recent</div>
   </div>
@@ -306,7 +308,140 @@
       <div class="panel">
         <div class="panel-title">All meeting transcripts</div>
         <div class="panel-sub">Click any to analyze with Claude (first time takes ~2s, then cached)</div>
-        <div id="all-transcripts" class="loading">Loading…</div>
+        <div style="display:flex;gap:8px;margin-top:10px;flex-wrap:wrap;align-items:center;font-size:12px">
+          <input type="text" id="tr-search" placeholder="Search title…" style="flex:1;min-width:200px;padding:6px 10px;border:0.5px solid rgba(0,0,0,0.15);border-radius:6px;font-size:12px" />
+          <select id="tr-sentiment" style="padding:6px 10px;border:0.5px solid rgba(0,0,0,0.15);border-radius:6px;font-size:12px">
+            <option value="">All statuses</option>
+            <option value="analyzed">Analyzed</option>
+            <option value="not_analyzed">Not analyzed</option>
+            <option value="positive">Positive</option>
+            <option value="neutral">Neutral</option>
+            <option value="at_risk">At risk</option>
+            <option value="negative">Negative</option>
+          </select>
+          <select id="tr-period" style="padding:6px 10px;border:0.5px solid rgba(0,0,0,0.15);border-radius:6px;font-size:12px">
+            <option value="all">All time</option>
+            <option value="7">Last 7 days</option>
+            <option value="30">Last 30 days</option>
+            <option value="90">Last 90 days</option>
+          </select>
+          <select id="tr-page-size" style="padding:6px 10px;border:0.5px solid rgba(0,0,0,0.15);border-radius:6px;font-size:12px">
+            <option value="20">20 / page</option>
+            <option value="50">50 / page</option>
+            <option value="100">100 / page</option>
+          </select>
+        </div>
+        <div id="all-transcripts" class="loading" style="margin-top:10px">Loading…</div>
+        <div id="tr-pagination" style="display:flex;justify-content:space-between;align-items:center;margin-top:12px;font-size:12px;color:#5F5E5A"></div>
+      </div>
+    </div>
+
+    <!-- MEETING INTEL -->
+    <div data-panel="meeting-intel" style="display:none">
+      <div class="panel" style="margin-bottom:14px">
+        <div class="panel-title">🧠 Meeting intelligence dashboard</div>
+        <div class="panel-sub">Aggregates insights from all analyzed Confluence transcripts</div>
+        <div id="mi-status" class="loading" style="margin-top:8px">Loading aggregations…</div>
+      </div>
+      <div id="mi-content" style="display:none">
+        <div class="stat-grid">
+          <div class="stat"><div class="lbl">Meetings analyzed</div><div class="val" id="mi-total">—</div></div>
+          <div class="stat"><div class="lbl">Avg sentiment</div><div class="val" id="mi-avg-sent">—</div></div>
+          <div class="stat"><div class="lbl">Budget discussed</div><div class="val" id="mi-budget">—</div></div>
+          <div class="stat"><div class="lbl">Decision maker engaged</div><div class="val" id="mi-decisionmaker">—</div></div>
+        </div>
+
+        <div class="grid-2" style="margin-top:14px">
+          <div class="panel">
+            <div class="panel-title">📊 Sentiment distribution</div>
+            <div id="mi-sentiment"></div>
+          </div>
+          <div class="panel">
+            <div class="panel-title">🚨 Top risk flags</div>
+            <div id="mi-risks"></div>
+          </div>
+        </div>
+
+        <div class="grid-2" style="margin-top:14px">
+          <div class="panel">
+            <div class="panel-title">🥊 Top competitors mentioned</div>
+            <div id="mi-competitors"></div>
+          </div>
+          <div class="panel">
+            <div class="panel-title">🙅 Top objections</div>
+            <div id="mi-objections"></div>
+          </div>
+        </div>
+
+        <div class="panel" style="margin-top:14px">
+          <div class="panel-title">🏷 Top keywords across meetings</div>
+          <div id="mi-keywords" style="display:flex;flex-wrap:wrap;gap:6px"></div>
+        </div>
+
+        <div class="panel" style="margin-top:14px">
+          <div class="panel-title">⚠ Meetings needing attention (at risk / negative)</div>
+          <div id="mi-atrisk"></div>
+        </div>
+
+        <div class="panel" style="margin-top:14px">
+          <div class="panel-title">✅ Open action items across meetings</div>
+          <div id="mi-actions"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- BUYER INTEL -->
+    <div data-panel="buyer-intel" style="display:none">
+      <div class="panel" style="margin-bottom:14px">
+        <div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:8px">
+          <div>
+            <div class="panel-title">🎯 Buyer intelligence (Starbridge)</div>
+            <div class="panel-sub">Aggregated signals across all bridges + top buyers</div>
+          </div>
+          <select id="bi-period" style="padding:6px 10px;border:0.5px solid rgba(0,0,0,0.15);border-radius:6px;font-size:12px">
+            <option value="LastSevenDays">Last 7 days</option>
+            <option value="LastThirtyDays" selected>Last 30 days</option>
+            <option value="LastSixtyDays">Last 60 days</option>
+            <option value="LastThreeMonths">Last 3 months</option>
+            <option value="LastSixMonths">Last 6 months</option>
+          </select>
+        </div>
+        <div id="bi-status" class="loading" style="margin-top:8px">Loading…</div>
+      </div>
+      <div id="bi-content" style="display:none">
+        <div class="stat-grid">
+          <div class="stat"><div class="lbl">Total signals</div><div class="val" id="bi-total">—</div></div>
+          <div class="stat"><div class="lbl">Unique buyers</div><div class="val" id="bi-buyers">—</div></div>
+          <div class="stat"><div class="lbl">RFPs</div><div class="val" id="bi-rfps">—</div></div>
+          <div class="stat"><div class="lbl">Job changes</div><div class="val" id="bi-jobs">—</div></div>
+        </div>
+
+        <div class="grid-2" style="margin-top:14px">
+          <div class="panel">
+            <div class="panel-title">📊 Signals by type</div>
+            <div id="bi-signal-types"></div>
+          </div>
+          <div class="panel">
+            <div class="panel-title">🔥 Top buyers by signal volume</div>
+            <div id="bi-top-buyers"></div>
+          </div>
+        </div>
+
+        <div class="grid-2" style="margin-top:14px">
+          <div class="panel">
+            <div class="panel-title">📋 Recent RFPs</div>
+            <div id="bi-rfps-list"></div>
+          </div>
+          <div class="panel">
+            <div class="panel-title">👤 Recent job changes</div>
+            <div id="bi-jobs-list"></div>
+          </div>
+        </div>
+
+        <div class="panel" style="margin-top:14px">
+          <div class="panel-title">🌡 Hottest signals right now</div>
+          <div id="bi-hottest"></div>
+        </div>
       </div>
     </div>
 
@@ -638,35 +773,6 @@
     lost.innerHTML = d.recent.lost.length
       ? d.recent.lost.map(l => `<div class="row" style="flex-direction:column;align-items:stretch"><div style="display:flex;justify-content:space-between"><span>${escapeHtml(l.dealname)}</span><span class="meta">${fmtMoney(l.amount)} · ${fmtDate(l.close_date)}</span></div>${l.reason ? `<div class="meta">${escapeHtml(l.reason)}</div>` : ''}</div>`).join('')
       : '<div style="color:#888780">No recent losses</div>';
-  }
-
-  async function renderTranscripts(targetId, limit) {
-    const target = document.getElementById(targetId);
-    target.innerHTML = '<div class="loading">Loading…</div>';
-    const tr = await fetchTranscripts(limit);
-    if (!tr.results.length) {
-      target.innerHTML = '<div style="color:#888780;font-size:13px">No transcripts found in Confluence</div>';
-      return;
-    }
-    target.innerHTML = tr.results.map(t => {
-      let badge;
-      if (t.sentiment) {
-        // analyzed with sentiment from label
-        badge = `<span class="badge ${t.sentiment}">${t.sentiment.replace('_', ' ')}</span>`;
-      } else if (t.has_insight) {
-        // analyzed but no sentiment label (old insights)
-        badge = `<span class="badge positive">analyzed</span>`;
-      } else {
-        badge = `<span class="badge neutral">not analyzed</span>`;
-      }
-      return `<div class="transcript-card" onclick="openInsight('${t.page_id}', this)">
-        <div style="display:flex;justify-content:space-between;align-items:center">
-          <div class="transcript-title">${escapeHtml(t.title)}</div>
-          ${badge}
-        </div>
-        <div class="transcript-meta">${fmtDate(t.created_date)} · <a href="${t.url}" target="_blank" onclick="event.stopPropagation()" style="color:#5F5E5A">view in Confluence ↗</a></div>
-      </div>`;
-    }).join('');
   }
 
   async function openInsight(pageId, cardEl, force = false) {
@@ -1470,6 +1576,242 @@
   }
   window.openBuyerSummary = openBuyerSummary;
 
+  // -------- CONVERSATIONS PAGINATION + FILTERS --------
+  let trAllCache = null;
+  let trPage = 0;
+
+  async function renderTranscripts(targetId, limit) {
+    // For the "recent-meetings" panel we still just show top N
+    const target = document.getElementById(targetId);
+    target.innerHTML = '<div class="loading">Loading…</div>';
+    if (!trAllCache) {
+      try {
+        const r = await fetch(`/api/transcripts?limit=100`);
+        if (!r.ok) throw new Error(r.status);
+        trAllCache = await r.json();
+      } catch (e) {
+        target.innerHTML = `<div style="color:#791F1F">Error: ${e.message}</div>`;
+        return;
+      }
+    }
+    if (targetId === 'all-transcripts') {
+      renderConversationsPage();
+      return;
+    }
+    const top = trAllCache.results.slice(0, limit);
+    if (!top.length) { target.innerHTML = '<div style="color:#888780;font-size:13px">No transcripts</div>'; return; }
+    target.innerHTML = top.map(t => renderTranscriptCard(t)).join('');
+  }
+
+  function renderTranscriptCard(t) {
+    let badge;
+    if (t.sentiment) badge = `<span class="badge ${t.sentiment}">${t.sentiment.replace('_', ' ')}</span>`;
+    else if (t.has_insight) badge = `<span class="badge positive">analyzed</span>`;
+    else badge = `<span class="badge neutral">not analyzed</span>`;
+    return `<div class="transcript-card" onclick="openInsight('${t.page_id}', this)">
+      <div style="display:flex;justify-content:space-between;align-items:center">
+        <div class="transcript-title">${escapeHtml(t.title)}</div>
+        ${badge}
+      </div>
+      <div class="transcript-meta">${fmtDate(t.created_date)} · <a href="${t.url}" target="_blank" onclick="event.stopPropagation()" style="color:#5F5E5A">view in Confluence ↗</a></div>
+    </div>`;
+  }
+
+  function renderConversationsPage() {
+    const target = document.getElementById('all-transcripts');
+    const search = (document.getElementById('tr-search')?.value || '').toLowerCase();
+    const sentiment = document.getElementById('tr-sentiment')?.value || '';
+    const period = document.getElementById('tr-period')?.value || 'all';
+    const pageSize = parseInt(document.getElementById('tr-page-size')?.value || '20', 10);
+
+    let filtered = (trAllCache?.results || []).slice();
+    if (search) filtered = filtered.filter(t => (t.title || '').toLowerCase().includes(search));
+    if (sentiment === 'analyzed') filtered = filtered.filter(t => t.has_insight);
+    else if (sentiment === 'not_analyzed') filtered = filtered.filter(t => !t.has_insight);
+    else if (sentiment) filtered = filtered.filter(t => t.sentiment === sentiment);
+    if (period !== 'all') {
+      const days = parseInt(period, 10);
+      const cutoff = Date.now() - days * 86400000;
+      filtered = filtered.filter(t => t.created_date && new Date(t.created_date).getTime() >= cutoff);
+    }
+
+    const totalPages = Math.max(1, Math.ceil(filtered.length / pageSize));
+    if (trPage >= totalPages) trPage = 0;
+    const start = trPage * pageSize;
+    const paged = filtered.slice(start, start + pageSize);
+    target.innerHTML = paged.length
+      ? paged.map(t => renderTranscriptCard(t)).join('')
+      : '<div style="color:#888780;font-size:13px;padding:20px;text-align:center">No transcripts match filters</div>';
+
+    document.getElementById('tr-pagination').innerHTML = `
+      <span>Showing ${filtered.length ? start + 1 : 0}–${Math.min(start + pageSize, filtered.length)} of ${filtered.length}</span>
+      <span>
+        <button ${trPage === 0 ? 'disabled' : ''} onclick="trPrevPage()" style="padding:4px 10px;background:#fff;border:0.5px solid rgba(0,0,0,0.15);border-radius:6px;cursor:${trPage === 0 ? 'not-allowed' : 'pointer'};font-family:inherit">‹ Prev</button>
+        <span style="margin:0 8px">Page ${trPage + 1} / ${totalPages}</span>
+        <button ${trPage >= totalPages - 1 ? 'disabled' : ''} onclick="trNextPage()" style="padding:4px 10px;background:#fff;border:0.5px solid rgba(0,0,0,0.15);border-radius:6px;cursor:${trPage >= totalPages - 1 ? 'not-allowed' : 'pointer'};font-family:inherit">Next ›</button>
+      </span>
+    `;
+  }
+  window.trPrevPage = () => { if (trPage > 0) { trPage--; renderConversationsPage(); } };
+  window.trNextPage = () => { trPage++; renderConversationsPage(); };
+
+  // -------- MEETING INTEL DASHBOARD --------
+  let miCache = null;
+  async function loadMeetingIntel() {
+    if (miCache) { renderMeetingIntel(miCache); return; }
+    document.getElementById('mi-status').textContent = 'Loading… (fetching all Claude Insights from Confluence)';
+    try {
+      const r = await fetch('/api/transcripts?action=analytics');
+      if (!r.ok) throw new Error(r.status);
+      miCache = await r.json();
+      renderMeetingIntel(miCache);
+    } catch (e) {
+      document.getElementById('mi-status').textContent = 'Error: ' + e.message;
+    }
+  }
+
+  function renderMeetingIntel(d) {
+    if (!d.total_analyzed) {
+      document.getElementById('mi-status').textContent = 'No analyzed meetings yet. Analyze transcripts in the Conversations tab first.';
+      return;
+    }
+    document.getElementById('mi-status').style.display = 'none';
+    document.getElementById('mi-content').style.display = 'block';
+
+    document.getElementById('mi-total').textContent = d.total_analyzed;
+    document.getElementById('mi-avg-sent').textContent = (d.avg_sentiment_score || 0).toFixed(2);
+    document.getElementById('mi-budget').textContent = fmtPct(d.deal_signals_pct?.budget_discussed || 0);
+    document.getElementById('mi-decisionmaker').textContent = fmtPct(d.deal_signals_pct?.decision_maker_engaged || 0);
+
+    // Sentiment bars
+    const sd = d.sentiment_distribution;
+    const total = (sd.positive || 0) + (sd.neutral || 0) + (sd.at_risk || 0) + (sd.negative || 0);
+    const sentColors = { positive: '#0F6E56', neutral: '#5F5E5A', at_risk: '#BA7517', negative: '#791F1F' };
+    document.getElementById('mi-sentiment').innerHTML = ['positive', 'neutral', 'at_risk', 'negative'].map(s => {
+      const n = sd[s] || 0;
+      const pct = total > 0 ? (n / total) * 100 : 0;
+      return `<div style="margin-bottom:6px">
+        <div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:2px">
+          <span>${s.replace('_', ' ')}</span><span><strong>${n}</strong> (${pct.toFixed(0)}%)</span>
+        </div>
+        <div style="height:8px;background:#F1EFE8;border-radius:4px;overflow:hidden">
+          <div style="height:100%;width:${pct}%;background:${sentColors[s]}"></div>
+        </div>
+      </div>`;
+    }).join('');
+
+    // Bar list helper
+    const barList = (items, color) => {
+      if (!items.length) return '<div style="color:#888780;font-size:12px">None found</div>';
+      const max = Math.max(...items.map(i => i.count));
+      return items.slice(0, 10).map(i => `
+        <div style="margin-bottom:6px">
+          <div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:2px">
+            <span>${escapeHtml(i.label)}</span><span><strong>${i.count}</strong></span>
+          </div>
+          <div style="height:6px;background:#F1EFE8;border-radius:3px;overflow:hidden">
+            <div style="height:100%;width:${(i.count / max) * 100}%;background:${color}"></div>
+          </div>
+        </div>`).join('');
+    };
+
+    document.getElementById('mi-risks').innerHTML = barList(d.top_risks || [], '#A32D2D');
+    document.getElementById('mi-competitors').innerHTML = barList(d.top_competitors || [], '#7F77DD');
+    document.getElementById('mi-objections').innerHTML = barList(d.top_objections || [], '#BA7517');
+
+    // Keyword chips
+    document.getElementById('mi-keywords').innerHTML = (d.top_keywords || []).map(k =>
+      `<span class="badge neutral" style="font-size:11px">${escapeHtml(k.label)} · ${k.count}</span>`
+    ).join('');
+
+    // At-risk meetings list
+    document.getElementById('mi-atrisk').innerHTML = (d.at_risk_meetings || []).length
+      ? d.at_risk_meetings.map(m => `<div class="row" style="flex-direction:column;align-items:stretch">
+          <div style="display:flex;justify-content:space-between">
+            <strong style="font-weight:500">${escapeHtml(m.title || '(untitled)')}</strong>
+            <span class="badge ${m.sentiment}">${m.sentiment.replace('_', ' ')}</span>
+          </div>
+          <div class="meta">${fmtDate(m.date)} · ${escapeHtml(m.summary || '')}</div>
+          ${m.next_step ? `<div style="font-size:11px;color:#0C447C;margin-top:4px"><strong style="font-weight:500">Next step:</strong> ${escapeHtml(m.next_step)}</div>` : ''}
+          ${m.source_url ? `<div style="margin-top:4px"><a href="${m.source_url}" target="_blank" style="font-size:11px;color:#2D58A8">Open in Confluence ↗</a></div>` : ''}
+        </div>`).join('')
+      : '<div style="color:#888780;font-size:12px">No at-risk meetings 🎉</div>';
+
+    // Action items
+    document.getElementById('mi-actions').innerHTML = (d.recent_action_items || []).length
+      ? d.recent_action_items.map(a => `<div class="row">
+          <span><strong style="font-weight:500">${escapeHtml(a.owner || '?')}</strong>: ${escapeHtml(a.task || '')}</span>
+          <span class="meta">${a.due || 'no due'} · <a href="${a.source_url || '#'}" target="_blank" style="color:#5F5E5A">from: ${escapeHtml((a.meeting_title || '').slice(0, 40))}</a></span>
+        </div>`).join('')
+      : '<div style="color:#888780;font-size:12px">No pending action items</div>';
+  }
+
+  // -------- BUYER INTEL DASHBOARD --------
+  let biCache = null;
+  async function loadBuyerIntel() {
+    const period = document.getElementById('bi-period').value;
+    document.getElementById('bi-status').textContent = 'Loading Starbridge aggregation…';
+    try {
+      const r = await fetch(`/api/starbridge?action=analytics&period=${period}`);
+      if (!r.ok) throw new Error(r.status);
+      biCache = await r.json();
+      renderBuyerIntel(biCache);
+    } catch (e) {
+      document.getElementById('bi-status').textContent = 'Error: ' + e.message;
+    }
+  }
+
+  function renderBuyerIntel(d) {
+    document.getElementById('bi-status').style.display = 'none';
+    document.getElementById('bi-content').style.display = 'block';
+
+    document.getElementById('bi-total').textContent = d.total_signals || 0;
+    document.getElementById('bi-buyers').textContent = d.unique_buyers || 0;
+    document.getElementById('bi-rfps').textContent = d.signals_by_type?.RFP || 0;
+    document.getElementById('bi-jobs').textContent = d.signals_by_type?.JobChange || 0;
+
+    // Signals by type
+    const sbt = d.signals_by_type || {};
+    const sbtEntries = Object.entries(sbt).sort((a, b) => b[1] - a[1]);
+    const sbtMax = sbtEntries.length ? Math.max(...sbtEntries.map(e => e[1])) : 1;
+    const typeColors = { RFP: '#2D58A8', Meeting: '#1D9E75', Purchase: '#BA7517', JobChange: '#7F77DD', Conference: '#185FA5', Contact: '#5F5E5A', Signal: '#854F0B', Buyer: '#5F5E5A' };
+    document.getElementById('bi-signal-types').innerHTML = sbtEntries.map(([type, n]) => `
+      <div style="margin-bottom:6px">
+        <div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:2px">
+          <span>${type}</span><span><strong>${n}</strong></span>
+        </div>
+        <div style="height:6px;background:#F1EFE8;border-radius:3px;overflow:hidden">
+          <div style="height:100%;width:${(n / sbtMax) * 100}%;background:${typeColors[type] || '#888'}"></div>
+        </div>
+      </div>`).join('');
+
+    // Top buyers
+    document.getElementById('bi-top-buyers').innerHTML = (d.top_buyers || []).length
+      ? d.top_buyers.slice(0, 10).map(b => `<div class="row">
+          <span>
+            <a href="#" onclick="openBuyerSummary('${b.buyerId}','${escapeHtml(b.sample_row_name || 'Buyer')}');return false" style="color:#2D58A8">${escapeHtml(b.sample_row_name || b.buyerId)}</a>
+          </span>
+          <span class="meta">${b.count} signals · last ${ago(b.last_seen)}</span>
+        </div>`).join('')
+      : '<div style="color:#888780;font-size:12px">No buyer data</div>';
+
+    // Recent RFPs
+    document.getElementById('bi-rfps-list').innerHTML = renderSignalList(d.recent_rfps);
+    document.getElementById('bi-jobs-list').innerHTML = renderSignalList(d.recent_job_changes);
+    document.getElementById('bi-hottest').innerHTML = renderSignalList(d.hottest);
+  }
+
+  function renderSignalList(sigs) {
+    if (!sigs || !sigs.length) return '<div style="color:#888780;font-size:12px">None found</div>';
+    return sigs.slice(0, 10).map(s => `<div class="row">
+      <span>
+        ${s.buyer_id ? `<a href="#" onclick="openBuyerSummary('${s.buyer_id}','${escapeHtml(s.row_name || '')}');return false" style="color:#2D58A8;text-decoration:none">${escapeHtml(s.row_name || '(no name)')}</a>` : escapeHtml(s.row_name || '(no name)')}
+        <span class="meta" style="margin-left:6px">${escapeHtml(s.bridge_name || '')}</span>
+      </span>
+      <span class="meta">${ago(s.updated_at)}</span>
+    </div>`).join('');
+  }
+
   // Tabs
   document.querySelectorAll('.tab').forEach(t => {
     t.onclick = () => {
@@ -1483,8 +1825,20 @@
       if (target === 'emails') loadEmails();
       if (target === 'leads') loadLeads();
       if (target === 'signals') loadSignals();
+      if (target === 'meeting-intel') loadMeetingIntel();
+      if (target === 'buyer-intel') loadBuyerIntel();
     };
   });
+
+  // Conversations filters
+  ['tr-search', 'tr-sentiment', 'tr-period', 'tr-page-size'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.addEventListener(id === 'tr-search' ? 'input' : 'change', () => {
+      trPage = 0;
+      renderConversationsPage();
+    });
+  });
+  document.getElementById('bi-period')?.addEventListener('change', () => loadBuyerIntel());
 
   // Wire up signals tab controls
   document.getElementById('signals-period')?.addEventListener('change', () => loadSignals());
