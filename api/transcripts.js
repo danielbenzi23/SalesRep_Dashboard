@@ -10,6 +10,7 @@ import {
   htmlToText,
   findInsightChildPage,
   findAllInsightPages,
+  fetchPageBody,
   createInsightChildPage,
   updateInsightChildPage,
   addLabels,
@@ -102,16 +103,57 @@ export default async function handler(req, res) {
     const url = new URL(req.url, `http://${req.headers.host || 'x'}`);
     const action = url.searchParams.get('action');
 
-    // ===== ANALYTICS: aggregate all Claude Insights across the space =====
+    // ===== ANALYTICS: aggregate all Claude Insights =====
     if (action === 'analytics') {
-      let pages;
-      try { pages = await findAllInsightPages(200); }
+      // Strategy: (1) list all transcripts, (2) filter to analyzed by label,
+      // (3) for each, find its "Claude Insights" child page via findInsightChildPage,
+      // (4) extract JSON, (5) aggregate.
+      // This is more reliable than a single-space CQL because it uses the same lookup
+      // path that createInsightChildPage/addLabels use.
+
+      let transcripts;
+      try { transcripts = await listChildPages(transcriptsParentId(), { limit: 200 }); }
       catch (e) { return res.status(502).json({ error: 'confluence_failed', detail: e.message }); }
 
-      const insights = pages
+      const analyzedTranscripts = transcripts.filter(t => (t.labels || []).includes(ANALYZED_LABEL));
+
+      // Concurrent lookup
+      async function pLimit(items, concurrency, fn) {
+        const results = new Array(items.length);
+        let idx = 0;
+        async function worker() {
+          while (true) {
+            const i = idx++;
+            if (i >= items.length) return;
+            try { results[i] = await fn(items[i], i); } catch (e) { results[i] = null; }
+          }
+        }
+        await Promise.all(Array.from({ length: Math.min(concurrency, items.length) }, worker));
+        return results;
+      }
+
+      const insightPages = await pLimit(analyzedTranscripts, 8, async (t) => {
+        try {
+          const child = await findInsightChildPage(t.page_id);
+          if (!child) return null;
+          return {
+            body_html: child.body?.storage?.value || null,
+            createdDate: t.created_date || null,
+            transcript_title: t.title,
+            transcript_url: t.url
+          };
+        } catch { return null; }
+      });
+
+      const insights = insightPages
+        .filter(Boolean)
         .map(p => {
-          const parsed = extractInsightJson(p.body?.storage?.value);
-          return parsed ? { ...parsed, _createdAt: p.history?.createdDate || null } : null;
+          const parsed = extractInsightJson(p.body_html);
+          if (!parsed) return null;
+          // Fill in title/url from transcript if not present in the insight
+          if (!parsed.meeting_title) parsed.meeting_title = p.transcript_title;
+          if (!parsed.source_url) parsed.source_url = p.transcript_url;
+          return { ...parsed, _createdAt: p.createdDate };
         })
         .filter(Boolean);
 
@@ -163,6 +205,8 @@ export default async function handler(req, res) {
       ).slice(0, 30);
 
       return res.status(200).json({
+        total_transcripts: transcripts.length,
+        total_analyzed_by_label: analyzedTranscripts.length,
         total_analyzed: total,
         avg_sentiment_score: sentimentScoreCount > 0 ? sentimentScoreSum / sentimentScoreCount : 0,
         sentiment_distribution: sentimentCounts,
