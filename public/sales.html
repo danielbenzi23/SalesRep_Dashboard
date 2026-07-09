@@ -330,7 +330,9 @@
             <option value="50">50 / page</option>
             <option value="100">100 / page</option>
           </select>
+          <button id="tr-bulk-analyze" style="padding:6px 12px;background:#2D58A8;color:#fff;border:none;border-radius:6px;font-size:12px;cursor:pointer;font-family:inherit">⚡ Analyze all pending</button>
         </div>
+        <div id="tr-bulk-progress" style="display:none;margin-top:8px;font-size:12px;color:#5F5E5A"></div>
         <div id="all-transcripts" class="loading" style="margin-top:10px">Loading…</div>
         <div id="tr-pagination" style="display:flex;justify-content:space-between;align-items:center;margin-top:12px;font-size:12px;color:#5F5E5A"></div>
       </div>
@@ -1655,6 +1657,56 @@
   window.trPrevPage = () => { if (trPage > 0) { trPage--; renderConversationsPage(); } };
   window.trNextPage = () => { trPage++; renderConversationsPage(); };
 
+  async function bulkAnalyzePending() {
+    const btn = document.getElementById('tr-bulk-analyze');
+    const progress = document.getElementById('tr-bulk-progress');
+    const pending = (trAllCache?.results || []).filter(t => !t.has_insight);
+    if (!pending.length) {
+      alert('Nothing to analyze — all transcripts already have insights.');
+      return;
+    }
+    if (!confirm(`Analyze ${pending.length} transcripts with Claude? (~${pending.length}s + ~$${(pending.length * 0.009).toFixed(2)} in API cost)`)) return;
+
+    btn.disabled = true; btn.textContent = 'Analyzing…';
+    progress.style.display = 'block';
+    let done = 0, failed = 0;
+
+    // Process 5 at a time (respects rate limits)
+    const concurrency = 5;
+    const queue = pending.slice();
+
+    async function worker() {
+      while (queue.length) {
+        const t = queue.shift();
+        try {
+          const r = await fetch('/api/transcripts', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ confluence_page_id: t.page_id })
+          });
+          if (!r.ok) failed++;
+          const j = await r.json().catch(() => ({}));
+          if (j.sentiment) {
+            t.has_insight = true;
+            t.sentiment = j.sentiment;
+          }
+        } catch (e) { failed++; }
+        done++;
+        progress.textContent = `Analyzed ${done} / ${pending.length}${failed ? ` · ${failed} failed` : ''}`;
+      }
+    }
+
+    await Promise.all(Array.from({ length: concurrency }, worker));
+    progress.textContent = `✓ Done · ${done - failed} analyzed${failed ? ` · ${failed} failed` : ''}`;
+    btn.disabled = false; btn.textContent = '⚡ Analyze all pending';
+
+    // Refresh: invalidate caches
+    trAllCache = null;
+    miCache = null;
+    await renderTranscripts('all-transcripts', 50);
+  }
+  window.bulkAnalyzePending = bulkAnalyzePending;
+
   // -------- MEETING INTEL DASHBOARD --------
   let miCache = null;
   async function loadMeetingIntel() {
@@ -1839,6 +1891,7 @@
     });
   });
   document.getElementById('bi-period')?.addEventListener('change', () => loadBuyerIntel());
+  document.getElementById('tr-bulk-analyze')?.addEventListener('click', bulkAnalyzePending);
 
   // Wire up signals tab controls
   document.getElementById('signals-period')?.addEventListener('change', () => loadSignals());
