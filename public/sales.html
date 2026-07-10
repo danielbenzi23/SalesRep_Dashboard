@@ -77,6 +77,22 @@
 </style>
 <!-- Glassmorphism design system overlay (loads last, wins cascade) -->
 <link rel="stylesheet" href="/design.css" />
+
+<!-- Vercel Web Analytics + Speed Insights (enable both in Vercel project settings) -->
+<script>window.va = window.va || function () { (window.vaq = window.vaq || []).push(arguments); };</script>
+<script defer src="/_vercel/insights/script.js"></script>
+<script defer src="/_vercel/speed-insights/script.js"></script>
+<script>
+  // Auto-track tab clicks as custom events (dashboards are SPA, URL doesn't change)
+  document.addEventListener('click', (e) => {
+    const t = e.target.closest('.tab, [data-tab], [data-target]');
+    if (!t) return;
+    const label = (t.getAttribute('data-target') || t.getAttribute('data-tab') || t.textContent || '').trim().slice(0, 40);
+    if (label && window.va) window.va('event', { name: 'tab_change', dashboard: 'sales', tab: label });
+  }, { passive: true });
+  // Expose helper for manual events elsewhere in the app: window.trackEvent('bulk_analyze', {count: 12})
+  window.trackEvent = (name, props = {}) => window.va && window.va('event', { name, dashboard: 'sales', ...props });
+</script>
 </head>
 <body>
 <div class="wrap">
