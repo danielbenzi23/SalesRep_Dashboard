@@ -355,3 +355,276 @@ footer { text-align: center; color: var(--ds-hint) !important; font-size: 11.5px
 .tab-content.active > * { animation: revealIn .5s cubic-bezier(.3,.8,.3,1) both; }
 @keyframes revealIn { from { opacity: 0; transform: translateY(14px); } to { opacity: 1; transform: none; } }
 @media (prefers-reduced-motion: reduce) { .tab-content.active > * { animation: none; } body::before, body::after { animation: none; } }
+
+/* ============================================================
+   Camada 1 / Camada 2 — new components (hero score, rank badge,
+   delta pills, AI insight card, sub-panel, confidence gauge)
+   ============================================================ */
+
+/* ---------- Hero score card (Pipeline / Rep health) ---------- */
+.hero-grid { display: grid; grid-template-columns: 1.15fr 1fr 1fr; gap: 16px; margin-bottom: 20px; }
+@media (max-width: 900px) { .hero-grid { grid-template-columns: 1fr; } }
+
+.hero-score {
+  position: relative;
+  background: rgba(255,255,255,.62) !important;
+  backdrop-filter: blur(20px) saturate(180%);
+  -webkit-backdrop-filter: blur(20px) saturate(180%);
+  border-radius: 22px !important;
+  padding: 22px 24px !important;
+  box-shadow:
+    inset 0 1px 1px rgba(255,255,255,.75),
+    0 14px 40px rgba(21,101,192,.14),
+    0 4px 10px rgba(30,20,70,.07) !important;
+  display: flex;
+  align-items: center;
+  gap: 20px;
+  overflow: hidden;
+}
+.hero-score::after {
+  content:''; position: absolute; inset: 0;
+  background: radial-gradient(120% 80% at 30% 0%, rgba(255,255,255,.28), transparent 55%);
+  pointer-events: none;
+}
+.hero-score .ring {
+  --pct: 78;
+  --col: var(--ds-primary);
+  --col2: var(--ds-primary-2);
+  width: 118px; height: 118px; flex: none;
+  border-radius: 50%;
+  background: conic-gradient(from -90deg, var(--col) 0%, var(--col2) calc(var(--pct) * 1%), rgba(21,101,192,.10) calc(var(--pct) * 1%) 100%);
+  display: grid; place-items: center;
+  position: relative;
+}
+.hero-score .ring::before {
+  content:''; position: absolute; inset: 8px;
+  background: rgba(255,255,255,.9);
+  backdrop-filter: blur(10px);
+  border-radius: 50%;
+  box-shadow: inset 0 1px 2px rgba(255,255,255,.9);
+}
+.hero-score .ring .ring-val {
+  position: relative;
+  font-family: 'Poppins', sans-serif;
+  font-weight: 600;
+  font-size: 34px;
+  color: var(--ds-primary-3);
+  letter-spacing: -.02em;
+  line-height: 1;
+}
+.hero-score .ring .ring-lbl {
+  position: relative;
+  font-size: 9.5px;
+  font-weight: 600;
+  color: var(--ds-muted);
+  letter-spacing: .12em;
+  text-transform: uppercase;
+  margin-top: 3px;
+}
+.hero-score .hero-body { flex: 1; min-width: 0; position: relative; z-index: 1; }
+.hero-score .hero-title {
+  font-family: 'Poppins', sans-serif;
+  font-weight: 600;
+  font-size: 18px;
+  color: var(--ds-primary-3);
+  letter-spacing: -.015em;
+  margin: 0 0 4px;
+}
+.hero-score .hero-sub { color: var(--ds-muted); font-size: 12.5px; margin-bottom: 12px; }
+.hero-score .hero-metrics {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(90px, 1fr));
+  gap: 10px 20px;
+}
+.hero-score .hero-metrics > div .lbl { font-size: 10.5px; }
+.hero-score .hero-metrics > div .val { font-size: 20px; }
+
+/* Different ring color themes */
+.hero-score.warn .ring { --col: var(--ds-amber); --col2: #F6C05B; }
+.hero-score.bad  .ring { --col: var(--ds-red);   --col2: #F1A891; }
+.hero-score.good .ring { --col: var(--ds-teal);  --col2: #4ED6BE; }
+
+/* ---------- Confidence card ---------- */
+.confidence-card {
+  padding: 20px 22px !important;
+  display: flex; flex-direction: column; gap: 12px;
+}
+.confidence-card .conf-top { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+.confidence-card .conf-title {
+  font-family: 'Poppins', sans-serif;
+  font-weight: 600;
+  font-size: 15px;
+  color: var(--ds-primary-3);
+  margin: 0;
+}
+.confidence-card .conf-value {
+  font-family: 'Poppins', sans-serif;
+  font-weight: 600;
+  font-size: 40px;
+  color: var(--ds-primary-3);
+  letter-spacing: -.03em;
+  line-height: 1;
+}
+.confidence-card .conf-bar {
+  height: 10px;
+  background: rgba(21,101,192,.08);
+  border-radius: 999px;
+  overflow: hidden;
+}
+.confidence-card .conf-bar > span {
+  display: block;
+  height: 100%;
+  border-radius: 999px;
+  background: linear-gradient(90deg, var(--ds-primary) 0%, var(--ds-primary-2) 100%);
+  box-shadow: 0 4px 12px -3px rgba(21,101,192,.5);
+  transition: width .6s cubic-bezier(.3,.8,.3,1);
+}
+.confidence-card .conf-note { color: var(--ds-muted); font-size: 12px; }
+
+/* AI Prediction pill */
+.pill.ai-pred {
+  color: var(--ds-purple);
+  background: rgba(92,66,194,.12);
+  font-weight: 600;
+  text-transform: uppercase;
+  font-size: 10px;
+  letter-spacing: .08em;
+  padding: 4px 10px;
+}
+.pill.ai-pred::before {
+  content:''; width: 6px; height: 6px; border-radius: 50%;
+  background: var(--ds-purple);
+  box-shadow: 0 0 0 3px rgba(92,66,194,.2);
+  animation: dotPulse 1.8s ease-in-out infinite;
+}
+@keyframes dotPulse { 0%,100% { opacity: 1; } 50% { opacity: .35; } }
+
+/* ---------- Delta pills (up / down / flat) ---------- */
+.delta {
+  display: inline-flex; align-items: center; gap: 4px;
+  font-weight: 600; font-size: 11.5px;
+  border-radius: 999px; padding: 3px 9px;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+}
+.delta.up   { color: var(--ds-teal); background: rgba(13,168,140,.11); }
+.delta.down { color: var(--ds-red);  background: rgba(224,122,95,.11); }
+.delta.flat { color: var(--ds-muted); background: rgba(100,116,139,.10); }
+.delta::before {
+  content:'';
+  width: 0; height: 0;
+  border-left: 4px solid transparent;
+  border-right: 4px solid transparent;
+}
+.delta.up::before   { border-bottom: 5px solid currentColor; }
+.delta.down::before { border-top: 5px solid currentColor; }
+.delta.flat::before { display: none; }
+
+/* ---------- Rank badge (leaderboard) ---------- */
+.rank-badge {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 26px; height: 26px;
+  border-radius: 999px;
+  font-family: 'Poppins', sans-serif;
+  font-weight: 600;
+  font-size: 12px;
+  color: #fff;
+  background: linear-gradient(135deg, #94A3B8, #64748B);
+  box-shadow: 0 4px 10px -4px rgba(100,116,139,.5);
+  flex: none;
+}
+.rank-badge.gold   { background: linear-gradient(135deg, #F5B94A, #E19112); box-shadow: 0 6px 14px -4px rgba(237,149,17,.55); }
+.rank-badge.silver { background: linear-gradient(135deg, #CBD5E1, #94A3B8); }
+.rank-badge.bronze { background: linear-gradient(135deg, #D4A374, #A97B48); }
+
+/* Leaderboard row */
+.leader-row {
+  display: grid;
+  grid-template-columns: 34px 1fr auto auto;
+  gap: 12px;
+  align-items: center;
+  padding: 10px 4px;
+  border-top: 1px solid var(--ds-line);
+}
+.leader-row:first-child { border-top: none; }
+.leader-name { font-weight: 600; color: var(--ds-text); font-size: 14px; }
+.leader-meta { color: var(--ds-muted); font-size: 11.5px; }
+.leader-val { font-family: 'Figtree', sans-serif; font-weight: 700; color: var(--ds-primary-3); font-size: 15px; font-variant-numeric: tabular-nums; }
+
+/* ---------- AI Insights card ---------- */
+.ai-insights {
+  padding: 20px 22px !important;
+  border: 1px solid rgba(92,66,194,.14) !important;
+  box-shadow:
+    inset 0 1px 1px rgba(255,255,255,.75),
+    0 14px 34px -20px rgba(92,66,194,.35),
+    0 4px 10px rgba(30,20,70,.06) !important;
+}
+.ai-insights .ai-head {
+  display: flex; align-items: center; justify-content: space-between;
+  margin-bottom: 12px;
+}
+.ai-insights .ai-title {
+  display: flex; align-items: center; gap: 10px;
+  font-family: 'Poppins', sans-serif;
+  font-weight: 600;
+  font-size: 15px;
+  color: var(--ds-primary-3);
+  margin: 0;
+}
+.ai-insights .ai-title::before {
+  content:'';
+  width: 22px; height: 22px;
+  border-radius: 8px;
+  background: linear-gradient(135deg, var(--ds-purple), var(--ds-primary));
+  box-shadow: 0 4px 10px -3px rgba(92,66,194,.5);
+  position: relative;
+}
+.ai-insights ul { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 10px; }
+.ai-insights li {
+  display: flex; gap: 10px; align-items: flex-start;
+  font-size: 13.5px; color: var(--ds-text); line-height: 1.45;
+}
+.ai-insights li::before {
+  content:'';
+  width: 6px; height: 6px; border-radius: 50%;
+  background: var(--ds-primary-2);
+  box-shadow: 0 0 0 3px rgba(0,184,228,.16);
+  margin-top: 7px; flex: none;
+}
+.ai-insights .ai-meta { font-size: 11px; color: var(--ds-hint); margin-top: 8px; }
+
+/* ---------- Sub-panel (nested card inside a card) ---------- */
+.sub-panel {
+  background: linear-gradient(150deg, rgba(255,255,255,.55), rgba(255,255,255,.22)) !important;
+  border: 1px solid rgba(255,255,255,.55) !important;
+  border-radius: 14px !important;
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  padding: 14px 16px !important;
+  margin: 0 !important;
+  box-shadow: 0 4px 10px rgba(30,20,70,.05) !important;
+}
+.sub-panel .lbl { font-size: 10px !important; }
+.sub-panel .val { font-size: 22px !important; }
+
+/* ---------- KPI cell wrapper (KPI + delta side-by-side) ---------- */
+.kpi-with-delta { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.kpi-row .kpi .kpi-value + .delta { margin-top: 8px; }
+
+/* ---------- Expandable table rows (optional, Camada 3 preview) ---------- */
+tr.expandable { cursor: pointer; transition: background .18s; }
+tr.expandable:hover { background: rgba(21,101,192,.045); }
+tr.expandable + tr.expanded-detail > td { padding: 0 !important; border-top: none !important; }
+tr.expandable + tr.expanded-detail .exp-wrap { max-height: 0; overflow: hidden; transition: max-height .35s cubic-bezier(.3,.8,.3,1); }
+tr.expandable.open + tr.expanded-detail .exp-wrap { max-height: 260px; padding: 12px 4px 16px; }
+
+/* ---------- Loading skeleton ---------- */
+.skeleton {
+  background: linear-gradient(90deg, rgba(21,101,192,.06), rgba(21,101,192,.12), rgba(21,101,192,.06));
+  background-size: 200% 100%;
+  animation: shimmer 1.4s ease-in-out infinite;
+  border-radius: 8px;
+  color: transparent !important;
+}
+@keyframes shimmer { 0% { background-position: 100% 0; } 100% { background-position: -100% 0; } }
