@@ -134,6 +134,52 @@
 
     <!-- TODAY -->
     <div data-panel="today">
+      <!-- Camada 1/2 hero: Rep Health + Personal Forecast Confidence + Team Rank -->
+      <div class="hero-grid">
+        <div class="hero-score" id="rep-hero-health">
+          <div class="ring" id="rep-hero-ring" style="--pct:0;">
+            <div>
+              <div class="ring-val" id="rep-health-score">—</div>
+              <div class="ring-lbl">Health</div>
+            </div>
+          </div>
+          <div class="hero-body">
+            <h3 class="hero-title" id="rep-hero-title">My Health Score</h3>
+            <div class="hero-sub" id="rep-hero-sub">Analyzing your pipeline…</div>
+            <div class="hero-metrics">
+              <div><div class="lbl">Coverage</div><div class="val num" id="rep-hm-coverage">—</div></div>
+              <div><div class="lbl">Quota %</div><div class="val num" id="rep-hm-quota">—</div></div>
+              <div><div class="lbl">Win rate</div><div class="val num" id="rep-hm-winrate">—</div></div>
+              <div><div class="lbl">Acts / mo</div><div class="val num" id="rep-hm-acts">—</div></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="panel confidence-card" id="rep-confidence">
+          <div class="conf-top">
+            <h3 class="conf-title">My Forecast Confidence</h3>
+            <span class="pill ai-pred">AI Prediction</span>
+          </div>
+          <div class="conf-value" id="rep-conf-value">—</div>
+          <div class="conf-bar"><span id="rep-conf-bar" style="width:0%"></span></div>
+          <div class="conf-note" id="rep-conf-note">Projected vs. personal quota</div>
+        </div>
+
+        <div class="panel" id="rep-rank-card">
+          <div class="panel-title" style="margin-bottom:8px;">Team Standing</div>
+          <div id="rep-rank-body"><div class="loading">Loading team…</div></div>
+        </div>
+      </div>
+
+      <div class="panel ai-insights" id="rep-ai-panel">
+        <div class="ai-head">
+          <h3 class="ai-title">3 things to do today</h3>
+          <span class="pill ai-pred" id="rep-todo-count">— items</span>
+        </div>
+        <ul id="rep-ai-todos"><li style="color:var(--ds-muted);">Analyzing your day…</li></ul>
+        <div class="ai-meta" id="rep-ai-meta"></div>
+      </div>
+
       <div class="stat-grid">
         <div class="stat"><div class="lbl">Tasks due today</div><div class="val" id="s-tasks">—</div></div>
         <div class="stat"><div class="lbl">Meetings this week</div><div class="val" id="s-meetings">—</div></div>
@@ -1047,11 +1093,98 @@
   }
   window.openZoomSummary = openZoomSummary;
 
+  // ---------- Camada 1/2: Today AI hero (rep score + confidence + rank + Claude todos) ----------
+  function fmtMoneyShort(n) {
+    if (n == null) return '—';
+    const a = Math.abs(n);
+    if (a >= 1e6) return '$' + (n / 1e6).toFixed(1) + 'M';
+    if (a >= 1e3) return '$' + (n / 1e3).toFixed(0) + 'K';
+    return '$' + Math.round(n).toLocaleString();
+  }
+  function renderTodayAi(d) {
+    if (!d) return;
+    const h = d.health || {};
+    const c = d.confidence || {};
+    const lb = d.leaderboard || [];
+    const todos = d.todos || [];
+    const rep = d.rep?.name || '';
+    // Hero
+    const setTxt = (id, v) => { const el = document.getElementById(id); if (el) el.textContent = v; };
+    setTxt('rep-hero-title', rep ? `${rep} · Health Score` : 'My Health Score');
+    setTxt('rep-health-score', h.score != null ? h.score : '—');
+    const ring = document.getElementById('rep-hero-ring');
+    if (ring) ring.style.setProperty('--pct', h.score || 0);
+    const hero = document.getElementById('rep-hero-health');
+    if (hero) { hero.classList.remove('good','warn','bad'); if (h.status) hero.classList.add(h.status); }
+    const b = h.breakdown || {};
+    setTxt('rep-hero-sub', `${b.coverage || 0}× coverage · ${b.quotaAttainPct || 0}% to quota · ${b.tasksOverdue || 0} overdue`);
+    setTxt('rep-hm-coverage', (b.coverage || 0) + '×');
+    setTxt('rep-hm-quota', (b.quotaAttainPct || 0) + '%');
+    setTxt('rep-hm-winrate', (b.winRate || 0) + '%');
+    setTxt('rep-hm-acts', (b.activityMonth || 0));
+
+    // Confidence
+    setTxt('rep-conf-value', (c.pct || 0) + '%');
+    const bar = document.getElementById('rep-conf-bar');
+    if (bar) bar.style.width = (c.pct || 0) + '%';
+    setTxt('rep-conf-note', `Projected ${fmtMoneyShort(c.projected)} vs. quota ${fmtMoneyShort(c.quota)} · hit prob ${c.hit || 0}%`);
+
+    // Team rank card
+    const rankBody = document.getElementById('rep-rank-body');
+    if (rankBody) {
+      if (lb.length === 0) {
+        rankBody.innerHTML = '<div class="loading">No team data</div>';
+      } else {
+        rankBody.innerHTML = lb.map(r => {
+          const cls = r.rank === 1 ? 'gold' : r.rank === 2 ? 'silver' : r.rank === 3 ? 'bronze' : '';
+          const meLabel = r.isMe ? '<span class="pill p-blue" style="margin-left:6px;font-size:9px;padding:2px 7px;background:rgba(21,101,192,.15);color:var(--ds-primary);border-radius:999px;">YOU</span>' : '';
+          return `<div class="leader-row" style="${r.isMe?'background:rgba(21,101,192,.06);border-radius:10px;':''}">
+            <div class="rank-badge ${cls}">${r.rank}</div>
+            <div>
+              <div class="leader-name">${r.name}${meLabel}</div>
+            </div>
+            <div class="leader-val">${fmtMoneyShort(r.wonRevenue)}</div>
+          </div>`;
+        }).join('');
+      }
+    }
+
+    // AI Todos
+    const todoBody = document.getElementById('rep-ai-todos');
+    const todoMeta = document.getElementById('rep-ai-meta');
+    const todoCount = document.getElementById('rep-todo-count');
+    if (todoBody) {
+      if (todos.length > 0) {
+        todoBody.innerHTML = todos.map(t => `<li>${String(t).replace(/</g,'&lt;')}</li>`).join('');
+      } else {
+        todoBody.innerHTML = `<li style="color:var(--ds-muted);">${d._fallback || 'No todos right now.'}</li>`;
+      }
+    }
+    if (todoCount) todoCount.textContent = (todos.length || 0) + ' items';
+    if (todoMeta && d.generatedAt) todoMeta.textContent = 'Generated by Claude Haiku · ' + new Date(d.generatedAt).toLocaleString();
+  }
+  async function loadTodayAi() {
+    try {
+      const ownerId = salesData?.rep?.ownerId;
+      const url = ownerId ? `/api/sales-data?action=today_ai&ownerId=${ownerId}` : '/api/sales-data?action=today_ai';
+      const r = await fetch(url);
+      if (!r.ok) throw new Error('today_ai ' + r.status);
+      const d = await r.json();
+      renderTodayAi(d);
+    } catch (e) {
+      console.error('today_ai failed', e);
+      const b = document.getElementById('rep-ai-todos');
+      if (b) b.innerHTML = '<li style="color:var(--ds-red);">Could not load today\'s AI briefing: ' + (e.message || e) + '</li>';
+    }
+  }
+
   function renderAll() {
     if (!salesData) return;
     document.getElementById('rep-sub').textContent = salesData.rep.name + ' · ' + salesData.rep.email;
     renderRepSelect();
     renderToday();
+    // Fire the AI hero in parallel (non-blocking)
+    loadTodayAi();
     renderActivityWeekTiles();
     renderMyActivity();
     renderPipeline();
