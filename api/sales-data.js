@@ -87,6 +87,224 @@ function daysBetween(a, b) {
   return Math.floor((b - a) / (1000 * 60 * 60 * 24));
 }
 
+// ============================================================
+// Camada 1/2: Sales Today AI payload (rep score + confidence
+// + team rank + Claude "3 things to do today" bullets)
+// ============================================================
+
+function pctClamp(x) { return Math.max(0, Math.min(100, Math.round(x))); }
+
+function computeRepHealth({ openDeals, wonYtdCount, wonYtdRevenue, lostYtdCount, activityMonth, tasksOverdueCount, staleDeals, quota }) {
+  // 0..30 pts: coverage vs remaining quota
+  const remaining = Math.max(0, quota - wonYtdRevenue);
+  const weightedPipe = openDeals.reduce((s, d) => {
+    const a = parseFloat(d.amount || 0);
+    const p = STAGE_PROBABILITY[d.dealstage] ?? 0.1;
+    return s + a * p;
+  }, 0);
+  const coverage = remaining > 0 ? weightedPipe / remaining : (weightedPipe > 0 ? 2 : 0);
+  const covPts = Math.max(0, Math.min(30, (coverage - 0.5) * 30));
+
+  // 0..25 pts: quota attainment YTD
+  const attain = quota > 0 ? wonYtdRevenue / quota : 0;
+  const attainPts = Math.max(0, Math.min(25, attain * 50));
+
+  // 0..20 pts: win rate
+  const closed = wonYtdCount + lostYtdCount;
+  const wr = closed > 0 ? wonYtdCount / closed : 0;
+  const wrPts = Math.max(0, Math.min(20, wr * 40));
+
+  // 0..15 pts: activity level (30d): normalize to ~80 activities/mo = 15 pts
+  const actPts = Math.max(0, Math.min(15, (activityMonth / 80) * 15));
+
+  // 0..10 pts: hygiene (inverse of overdue + stale)
+  const hygienePenalty = Math.min(10, (tasksOverdueCount * 0.5) + (staleDeals * 0.7));
+  const hygienePts = Math.max(0, 10 - hygienePenalty);
+
+  const score = pctClamp(covPts + attainPts + wrPts + actPts + hygienePts);
+  const status = score >= 75 ? 'good' : score >= 55 ? 'warn' : 'bad';
+  return {
+    score, status,
+    breakdown: {
+      coverage: Math.round(coverage * 100) / 100,
+      coveragePts: Math.round(covPts),
+      quotaAttainPct: Math.round(attain * 100),
+      quotaAttainPts: Math.round(attainPts),
+      winRate: Math.round(wr * 100),
+      winRatePts: Math.round(wrPts),
+      activityMonth,
+      activityPts: Math.round(actPts),
+      hygienePts: Math.round(hygienePts),
+      tasksOverdue: tasksOverdueCount,
+      staleDeals
+    },
+    weightedPipe: Math.round(weightedPipe),
+    remaining: Math.round(remaining)
+  };
+}
+
+function computeRepConfidence({ wonYtdRevenue, weightedPipe, quota }) {
+  const projected = wonYtdRevenue + weightedPipe;
+  const pct = quota > 0 ? Math.min(100, Math.round((projected / quota) * 100)) : 0;
+  // Hit prob logistic on coverage
+  const cov = quota > 0 ? projected / quota : 0;
+  const hit = Math.round(Math.min(0.99, 1 / (1 + Math.exp(-2.2 * (cov - 1)))) * 100);
+  return { pct, hit, projected: Math.round(projected), quota };
+}
+
+async function claudeTodos(payload) {
+  const apiKey = process.env.ANTHROPIC_API_KEY;
+  if (!apiKey) return null;
+  const prompt = `You are a friendly, direct sales coach. Given today's snapshot for a sales rep, produce 3 to 5 concrete todos for TODAY. Each ≤ 20 words, imperative form, action-first ("Follow up with…", "Book…", "Send…"). Use deal names and stage names when helpful. No preamble.
+
+Snapshot:
+${JSON.stringify(payload, null, 2)}
+
+Return valid JSON only:
+{"todos": ["…", "…", "…"]}`;
+  try {
+    const r = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: { 'x-api-key': apiKey, 'anthropic-version': '2023-06-01', 'content-type': 'application/json' },
+      body: JSON.stringify({
+        model: 'claude-haiku-4-5',
+        max_tokens: 700,
+        messages: [{ role: 'user', content: prompt }]
+      })
+    });
+    if (!r.ok) return null;
+    const j = await r.json();
+    const txt = j.content?.[0]?.text || '';
+    const m = txt.match(/\{[\s\S]*\}/);
+    if (!m) return null;
+    const parsed = JSON.parse(m[0]);
+    return Array.isArray(parsed.todos) ? parsed.todos.slice(0, 5) : null;
+  } catch (e) {
+    console.error('[claude todos]', e.message);
+    return null;
+  }
+}
+
+async function todayAiHandler({ hsToken, ownerId, ownerName, annualQuota, res }) {
+  try {
+    const now = new Date();
+    const yStart = yearStart(now).toISOString();
+    const staleCutoff = new Date(now.getTime() - STALE_DAYS * 86400000).toISOString();
+    const monthAgo = new Date(now.getTime() - 30 * 86400000).toISOString();
+    const todayEnd = endOfDayUTC(now).toISOString();
+    const nowIso = now.toISOString();
+
+    const ownerFilter = { propertyName: 'hubspot_owner_id', operator: 'EQ', value: ownerId };
+    const pipelineFilter = { propertyName: 'pipeline', operator: 'EQ', value: DS_PIPELINE };
+    const allOwners = { propertyName: 'hubspot_owner_id', operator: 'IN', values: Object.keys(OWNER_ID_TO_NAME) };
+
+    const countEng = async (obj, dateProp, from, to) =>
+      (await hsSearch(hsToken, obj, {
+        filterGroups: [{ filters: [ownerFilter, { propertyName: dateProp, operator: 'BETWEEN', value: from, highValue: to }] }],
+        limit: 1, properties: []
+      })).total || 0;
+
+    const [
+      openDealsResp, wonYtdResp, lostYtdResp, tasksOverdueResp,
+      calls30d, emails30d, meetings30d, tasks30d,
+      teamWonYtdResp
+    ] = await Promise.all([
+      fetchAll(hsToken, 'deals', [pipelineFilter, ownerFilter,
+        { propertyName: 'dealstage', operator: 'NOT_IN', values: [...WON_STAGE_IDS, ...LOST_STAGE_IDS] }
+      ], ['dealname', 'amount', 'dealstage', 'closedate', 'notes_last_contacted', 'hs_lastmodifieddate'], null, 5),
+      fetchAll(hsToken, 'deals', [pipelineFilter, ownerFilter,
+        { propertyName: 'dealstage', operator: 'IN', values: WON_STAGE_IDS },
+        { propertyName: 'closedate', operator: 'GTE', value: yStart }
+      ], ['amount', 'closedate'], null, 5),
+      fetchAll(hsToken, 'deals', [pipelineFilter, ownerFilter,
+        { propertyName: 'dealstage', operator: 'IN', values: LOST_STAGE_IDS },
+        { propertyName: 'closedate', operator: 'GTE', value: yStart }
+      ], ['amount', 'closedate'], null, 5),
+      fetchAll(hsToken, 'tasks', [ownerFilter,
+        { propertyName: 'hs_task_status', operator: 'NEQ', value: 'COMPLETED' },
+        { propertyName: 'hs_timestamp', operator: 'LTE', value: todayEnd }
+      ], ['hs_task_subject', 'hs_task_priority', 'hs_timestamp'], null, 2),
+      countEng('calls', 'hs_timestamp', monthAgo, nowIso),
+      countEng('emails', 'hs_timestamp', monthAgo, nowIso),
+      countEng('meetings', 'hs_meeting_start_time', monthAgo, nowIso),
+      countEng('tasks', 'hs_timestamp', monthAgo, nowIso),
+      fetchAll(hsToken, 'deals', [pipelineFilter, allOwners,
+        { propertyName: 'dealstage', operator: 'IN', values: WON_STAGE_IDS },
+        { propertyName: 'closedate', operator: 'GTE', value: yStart }
+      ], ['amount', 'hubspot_owner_id'], null, 5)
+    ]);
+
+    const openDeals = openDealsResp.map(d => d.properties);
+    const wonYtd = wonYtdResp.map(d => d.properties);
+    const lostYtd = lostYtdResp.map(d => d.properties);
+    const tasksOverdue = tasksOverdueResp.map(t => t.properties);
+    const wonYtdRevenue = wonYtd.reduce((s, d) => s + parseFloat(d.amount || 0), 0);
+    const activityMonth = calls30d + emails30d + meetings30d + tasks30d;
+    const staleDeals = openDeals.filter(d => {
+      const last = d.notes_last_contacted || d.hs_lastmodifieddate;
+      return !last || new Date(last).toISOString() < staleCutoff;
+    }).length;
+
+    const health = computeRepHealth({
+      openDeals, wonYtdCount: wonYtd.length, wonYtdRevenue,
+      lostYtdCount: lostYtd.length, activityMonth,
+      tasksOverdueCount: tasksOverdue.length, staleDeals, quota: annualQuota
+    });
+    const confidence = computeRepConfidence({
+      wonYtdRevenue, weightedPipe: health.weightedPipe, quota: annualQuota
+    });
+
+    // Team rank
+    const teamRevenue = {};
+    for (const d of teamWonYtdResp) {
+      const p = d.properties;
+      const oid = p.hubspot_owner_id;
+      teamRevenue[oid] = (teamRevenue[oid] || 0) + parseFloat(p.amount || 0);
+    }
+    const teamRows = Object.keys(OWNER_ID_TO_NAME).map(id => ({
+      ownerId: id,
+      name: OWNER_ID_TO_NAME[id],
+      wonRevenue: Math.round(teamRevenue[id] || 0)
+    }));
+    teamRows.sort((a, b) => b.wonRevenue - a.wonRevenue);
+    const rankedTeam = teamRows.map((r, i) => ({ ...r, rank: i + 1 }));
+    const myRank = rankedTeam.find(r => r.ownerId === ownerId) || { rank: null, wonRevenue: 0 };
+
+    const insightPayload = {
+      rep: ownerName, quota: annualQuota, wonYtd: Math.round(wonYtdRevenue),
+      wonCount: wonYtd.length, lostCount: lostYtd.length,
+      openDeals: openDeals.length, staleDeals, tasksOverdue: tasksOverdue.length,
+      activityMonth, weightedPipe: health.weightedPipe,
+      healthScore: health.score, confidencePct: confidence.pct,
+      teamRank: myRank.rank, teamSize: rankedTeam.length,
+      // Top 3 open deals as prompt context
+      topOpenDeals: openDeals
+        .slice()
+        .sort((a, b) => parseFloat(b.amount || 0) - parseFloat(a.amount || 0))
+        .slice(0, 3)
+        .map(d => ({ name: d.dealname, amount: parseFloat(d.amount || 0), stage: STAGE_NAMES[d.dealstage] || d.dealstage })),
+      overdueTaskSample: tasksOverdue.slice(0, 3).map(t => ({ subject: t.hs_task_subject, priority: t.hs_task_priority }))
+    };
+    const todos = await claudeTodos(insightPayload);
+
+    return res.status(200).json({
+      rep: { ownerId, name: ownerName, quota: annualQuota },
+      health,
+      confidence,
+      teamRank: { rank: myRank.rank, size: rankedTeam.length, myWon: myRank.wonRevenue },
+      leaderboard: rankedTeam.map(r => ({
+        rank: r.rank, name: r.name, wonRevenue: r.wonRevenue, isMe: r.ownerId === ownerId
+      })),
+      todos: todos || [],
+      _fallback: !todos ? 'Claude did not return todos (missing key, timeout, or parse error)' : null,
+      generatedAt: new Date().toISOString()
+    });
+  } catch (err) {
+    console.error('[today_ai]', err);
+    return res.status(500).json({ error: err.message || 'today_ai failed' });
+  }
+}
+
 export default async function handler(req, res) {
   const token = process.env.DASHBOARD_TOKEN;
   const hsToken = process.env.HUBSPOT_TOKEN;
@@ -110,6 +328,14 @@ export default async function handler(req, res) {
     const url = new URL(req.url, `http://${req.headers.host || 'x'}`);
     const requested = url.searchParams.get('ownerId');
     ownerId = (requested && OWNER_ID_TO_NAME[requested]) ? requested : '80532547';
+  }
+
+  // Early route: Today AI hero payload (rep health + confidence + rank + Claude todos)
+  const urlObj = new URL(req.url, `http://${req.headers.host || 'x'}`);
+  if (urlObj.searchParams.get('action') === 'today_ai') {
+    const nm = OWNER_ID_TO_NAME[ownerId] || 'Unknown';
+    const q = REP_ANNUAL_QUOTA[ownerId] || 0;
+    return todayAiHandler({ hsToken, ownerId, ownerName: nm, annualQuota: q, res });
   }
 
   const ownerName = OWNER_ID_TO_NAME[ownerId] || 'Unknown';
