@@ -75,6 +75,8 @@
   .modal .close { float: right; cursor: pointer; font-size: 18px; color: #888780; }
   .quote { font-style: italic; color: #444; padding: 6px 12px; border-left: 3px solid #2D58A8; margin: 8px 0; font-size: 12px; }
 </style>
+<!-- Glassmorphism design system overlay (loads last, wins cascade) -->
+<link rel="stylesheet" href="/design.css" />
 </head>
 <body>
 <div class="wrap">
@@ -1674,10 +1676,11 @@
 
     btn.disabled = true; btn.textContent = 'Analyzing…';
     progress.style.display = 'block';
-    let done = 0, failed = 0;
+    let done = 0, apiFailed = 0, saveFailed = 0, saveOk = 0;
+    const errorSamples = [];
 
-    // Process 5 at a time (respects rate limits)
-    const concurrency = 5;
+    // Process 2 at a time — Confluence has strict rate limits (~10 req/sec per user)
+    const concurrency = 2;
     const queue = pending.slice();
 
     async function worker() {
@@ -1689,20 +1692,32 @@
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ confluence_page_id: t.page_id })
           });
-          if (!r.ok) failed++;
+          if (!r.ok) apiFailed++;
           const j = await r.json().catch(() => ({}));
-          if (j.sentiment) {
+          if (j._save_error) {
+            saveFailed++;
+            if (errorSamples.length < 3) errorSamples.push(j._save_error.slice(0, 100));
+          } else if (j.sentiment) {
+            saveOk++;
             t.has_insight = true;
             t.sentiment = j.sentiment;
           }
-        } catch (e) { failed++; }
+        } catch (e) { apiFailed++; }
         done++;
-        progress.textContent = `Analyzed ${done} / ${pending.length}${failed ? ` · ${failed} failed` : ''}`;
+        const bits = [`Analyzed ${done} / ${pending.length}`];
+        if (saveOk) bits.push(`${saveOk} saved`);
+        if (saveFailed) bits.push(`⚠ ${saveFailed} save-failed`);
+        if (apiFailed) bits.push(`${apiFailed} api-failed`);
+        progress.textContent = bits.join(' · ');
       }
     }
 
     await Promise.all(Array.from({ length: concurrency }, worker));
-    progress.textContent = `✓ Done · ${done - failed} analyzed${failed ? ` · ${failed} failed` : ''}`;
+    const summary = [`✓ Done`, `${saveOk} saved to Confluence`];
+    if (saveFailed) summary.push(`${saveFailed} save-failed`);
+    if (apiFailed) summary.push(`${apiFailed} api-failed`);
+    if (errorSamples.length) summary.push(`(sample error: ${errorSamples[0]})`);
+    progress.textContent = summary.join(' · ');
     btn.disabled = false; btn.textContent = '⚡ Analyze all pending';
 
     // Refresh: invalidate caches
