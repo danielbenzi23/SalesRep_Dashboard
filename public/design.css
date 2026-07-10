@@ -1,0 +1,357 @@
+/* ============================================================
+   DegreeSight glassmorphism design system
+   Applied on top of existing dashboards (sales.html + index.html)
+   Reference: DS Sales Team Dashboard.dc.html
+   ============================================================ */
+
+@import url('https://fonts.googleapis.com/css2?family=Figtree:wght@400;500;600;700;800&family=Poppins:wght@600&display=swap');
+
+:root {
+  --ds-primary:   #1565C0;
+  --ds-primary-2: #00B8E4;
+  --ds-primary-3: #0F3B91;
+  --ds-teal:      #0DA88C;
+  --ds-amber:     #ED9511;
+  --ds-red:       #E07A5F;
+  --ds-purple:    #5C42C2;
+  --ds-text:      #334155;
+  --ds-muted:     #64748B;
+  --ds-hint:      #94A3B8;
+  --ds-line:      rgba(21,101,192,.08);
+}
+
+/* ---------- Background ---------- */
+html, body {
+  font-family: 'Figtree', -apple-system, BlinkMacSystemFont, sans-serif !important;
+  color: var(--ds-text) !important;
+  background:
+    radial-gradient(1100px 700px at 12% -10%, rgba(0,184,228,.15), transparent 55%),
+    radial-gradient(950px 640px at 104% 6%, rgba(21,101,192,.15), transparent 55%),
+    radial-gradient(820px 700px at 55% 115%, rgba(21,101,192,.11), transparent 58%),
+    linear-gradient(135deg, #E3F2FB 0%, #E1E5F8 55%, #CBD3FA 100%) !important;
+  background-attachment: fixed !important;
+  margin: 0;
+}
+
+/* Floating orbs (add via ::before/::after) */
+body::before,
+body::after {
+  content:'';
+  position: fixed;
+  border-radius: 50%;
+  filter: blur(120px);
+  pointer-events: none;
+  z-index: 0;
+  animation: orbFloat 18s ease-in-out infinite;
+}
+body::before { top: -160px; right: -100px; width: 560px; height: 560px; background: rgba(0,184,228,.13); }
+body::after  { bottom: -170px; left: 8%;  width: 460px; height: 460px; background: rgba(21,101,192,.11); animation-delay: -10s; }
+
+@keyframes orbFloat { 0%,100% { transform: translate(0,0); } 50% { transform: translate(24px,-26px); } }
+
+/* Anchor above orbs */
+body > * { position: relative; z-index: 1; }
+
+/* ---------- Typography ---------- */
+h1, h2, h3, .brand-title, .panel-title { font-family: 'Poppins', sans-serif !important; letter-spacing: -0.01em !important; }
+h1 { color: var(--ds-primary-3); font-weight: 600; }
+.num { font-variant-numeric: tabular-nums; }
+
+/* ---------- Header ---------- */
+.header, .hdr-row {
+  background: rgba(255,255,255,.55) !important;
+  backdrop-filter: blur(16px) saturate(180%);
+  -webkit-backdrop-filter: blur(16px) saturate(180%);
+  border-radius: 20px !important;
+  border: 1px solid rgba(255,255,255,.6) !important;
+  box-shadow:
+    inset 0 1px 1px rgba(255,255,255,.7),
+    0 10px 30px rgba(30,20,70,.08) !important;
+  padding: 14px 20px !important;
+  margin-bottom: 20px !important;
+}
+.brand-logo {
+  background: linear-gradient(135deg, var(--ds-primary), var(--ds-primary-2)) !important;
+  box-shadow: 0 6px 14px -5px rgba(21,101,192,.55) !important;
+  color: #fff !important;
+  font-weight: 700 !important;
+}
+
+/* ---------- Tabs ---------- */
+.tabs {
+  background: rgba(255,255,255,.5) !important;
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border: 1px solid rgba(255,255,255,.65) !important;
+  border-radius: 999px !important;
+  padding: 4px !important;
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.7), 0 10px 26px -16px rgba(30,50,140,.4) !important;
+  gap: 2px !important;
+  display: inline-flex !important;
+  flex-wrap: wrap;
+  margin-bottom: 22px !important;
+}
+.tab {
+  background: transparent !important;
+  color: var(--ds-muted) !important;
+  border: none !important;
+  border-radius: 999px !important;
+  padding: 8px 16px !important;
+  font-weight: 600 !important;
+  font-size: 13px !important;
+  cursor: pointer;
+  transition: all .25s ease;
+}
+.tab:hover { background: rgba(255,255,255,.55) !important; color: var(--ds-primary) !important; }
+.tab.active {
+  background: linear-gradient(90deg, var(--ds-primary) 0%, var(--ds-primary-2) 100%) !important;
+  color: #fff !important;
+  box-shadow: 0 8px 20px -6px rgba(21,101,192,.55) !important;
+  font-weight: 600 !important;
+}
+
+/* Legacy tab styles (RevOps uses .tab.active with different data-target) */
+.tab-content { display: none; }
+.tab-content.active { display: block; }
+
+/* ---------- Panels (Glass cards) ---------- */
+.panel, .kpi, .card {
+  position: relative;
+  background: rgba(255,255,255,.6) !important;
+  backdrop-filter: blur(20px) saturate(180%);
+  -webkit-backdrop-filter: blur(20px) saturate(180%);
+  border-radius: 20px !important;
+  border: none !important;
+  box-shadow:
+    inset 0 1px 1px rgba(255,255,255,.7),
+    inset 0 -1px 1px rgba(255,255,255,.2),
+    0 10px 30px rgba(30,20,70,.10),
+    0 2px 6px rgba(30,20,70,.06) !important;
+  padding: 20px 22px !important;
+  margin-bottom: 16px !important;
+  transition: transform .25s ease, box-shadow .25s ease;
+}
+.panel:hover, .kpi:hover, .card:hover {
+  transform: translateY(-2px);
+  box-shadow:
+    inset 0 1px 1px rgba(255,255,255,.7),
+    inset 0 -1px 1px rgba(255,255,255,.18),
+    0 22px 46px rgba(30,20,70,.15),
+    0 4px 10px rgba(30,20,70,.08) !important;
+}
+
+.panel-title {
+  font-family: 'Poppins', sans-serif !important;
+  font-weight: 600 !important;
+  font-size: 15px !important;
+  color: var(--ds-primary-3) !important;
+  margin-bottom: 8px !important;
+}
+.panel-sub {
+  font-size: 12px !important;
+  color: var(--ds-muted) !important;
+  margin-bottom: 12px !important;
+}
+
+/* ---------- Stat cards ---------- */
+.stat, .kpi {
+  background: rgba(255,255,255,.55) !important;
+  padding: 18px 20px !important;
+}
+.stat .lbl, .kpi .kpi-label {
+  font-weight: 700 !important;
+  font-size: 10.5px !important;
+  letter-spacing: .09em !important;
+  text-transform: uppercase !important;
+  color: var(--ds-muted) !important;
+}
+.stat .val, .kpi .kpi-value {
+  font-family: 'Figtree', sans-serif !important;
+  font-weight: 700 !important;
+  color: var(--ds-primary-3) !important;
+  letter-spacing: -.025em !important;
+  font-size: 30px !important;
+  line-height: 1 !important;
+  margin-top: 8px !important;
+}
+.kpi .kpi-sub, .stat > div:last-child {
+  font-size: 12px !important;
+  color: var(--ds-muted) !important;
+  font-weight: 500 !important;
+  margin-top: 6px !important;
+}
+
+/* ---------- Badges/Pills ---------- */
+.badge, .pill {
+  display: inline-flex !important;
+  align-items: center;
+  gap: 6px;
+  border-radius: 999px !important;
+  font-weight: 500 !important;
+  font-size: 11px !important;
+  letter-spacing: .05em !important;
+  padding: 3px 10px !important;
+  border: none !important;
+}
+.badge.positive { color: var(--ds-teal) !important; background: rgba(13,168,140,.12) !important; }
+.badge.negative { color: var(--ds-red) !important; background: rgba(224,122,95,.12) !important; }
+.badge.neutral  { color: var(--ds-muted) !important; background: rgba(100,116,139,.10) !important; }
+.badge.at_risk, .badge.stale { color: var(--ds-amber) !important; background: rgba(237,149,17,.12) !important; }
+.badge.hot { color: var(--ds-teal) !important; background: rgba(13,168,140,.12) !important; }
+.badge.overdue { color: var(--ds-red) !important; background: rgba(224,122,95,.12) !important; }
+
+/* ---------- Buttons ---------- */
+button:not(.tab):not(.chip):not(.badge) {
+  font-family: 'Figtree', sans-serif !important;
+  font-weight: 600 !important;
+  font-size: 13px !important;
+  border-radius: 999px !important;
+  cursor: pointer;
+  transition: transform .2s ease, box-shadow .2s ease, background .2s ease;
+}
+/* Primary CTA (any button with blue-ish inline background) */
+button[style*="background:#2D58A8"],
+button[style*="background: #2D58A8"],
+.cta,
+.refresh-btn.primary {
+  background: linear-gradient(90deg, var(--ds-primary) 0%, var(--ds-primary-2) 100%) !important;
+  border: none !important;
+  color: #fff !important;
+  padding: 8px 20px !important;
+  box-shadow: 0 10px 24px -10px rgba(21,101,192,.55) !important;
+}
+button[style*="background:#2D58A8"]:hover,
+button[style*="background: #2D58A8"]:hover,
+.cta:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 16px 30px -12px rgba(21,101,192,.65) !important;
+}
+/* Ghost buttons (transparent/white bg) */
+.refresh-btn, .logout,
+button[style*="background:#fff"],
+button[style*="background: #fff"],
+button[style*="background:transparent"] {
+  background: rgba(255,255,255,.5) !important;
+  backdrop-filter: blur(10px);
+  border: 1px solid rgba(255,255,255,.65) !important;
+  color: var(--ds-primary) !important;
+  padding: 6px 14px !important;
+}
+.refresh-btn:hover, .logout:hover { background: rgba(255,255,255,.85) !important; }
+
+/* Preset buttons (Quick range chips) */
+.preset-btn {
+  background: rgba(21,101,192,.05) !important;
+  color: var(--ds-muted) !important;
+  border: none !important;
+  border-radius: 999px !important;
+  padding: 6px 13px !important;
+  font-weight: 600 !important;
+  font-size: 12px !important;
+  transition: all .18s;
+}
+.preset-btn:hover { background: rgba(21,101,192,.12) !important; color: var(--ds-primary) !important; }
+.preset-btn.on { background: rgba(21,101,192,.12) !important; color: var(--ds-primary) !important; }
+
+/* ---------- Inputs / selects ---------- */
+input, select, textarea {
+  font-family: 'Figtree', sans-serif !important;
+  border-radius: 10px !important;
+  border: 1px solid rgba(255,255,255,.6) !important;
+  background: rgba(255,255,255,.6) !important;
+  padding: 8px 12px !important;
+  font-size: 13px !important;
+  color: var(--ds-text) !important;
+  transition: border-color .2s;
+}
+input:focus, select:focus, textarea:focus {
+  outline: none !important;
+  border-color: var(--ds-primary) !important;
+  box-shadow: 0 0 0 3px rgba(21,101,192,.12) !important;
+}
+
+/* ---------- Tables ---------- */
+table { border-collapse: collapse; width: 100%; }
+th {
+  font-weight: 600 !important;
+  font-size: 10.5px !important;
+  letter-spacing: .07em !important;
+  text-transform: uppercase !important;
+  color: var(--ds-hint) !important;
+  padding: 0 4px 12px !important;
+  border-bottom: 1px solid var(--ds-line) !important;
+  text-align: right;
+}
+th:first-child { text-align: left; }
+td {
+  font-size: 13.5px !important;
+  color: var(--ds-text) !important;
+  padding: 12px 4px !important;
+  border-top: 1px solid var(--ds-line) !important;
+  font-weight: 500 !important;
+  text-align: right;
+}
+td:first-child { text-align: left; }
+td.num { text-align: right; font-variant-numeric: tabular-nums; }
+tr.total td, tr:last-child td { font-weight: 700 !important; }
+
+/* ---------- Progress bars (goal tracker etc.) ---------- */
+.progress {
+  height: 12px !important;
+  background: rgba(21,101,192,.08) !important;
+  border-radius: 999px !important;
+  overflow: hidden;
+}
+.progress .bar {
+  height: 100% !important;
+  background: linear-gradient(90deg, var(--ds-primary) 0%, var(--ds-primary-2) 100%) !important;
+  border-radius: 999px !important;
+  box-shadow: 0 4px 12px -3px rgba(21,101,192,.5) !important;
+}
+
+/* ---------- Transcript cards / row items ---------- */
+.transcript-card, .row {
+  background: transparent !important;
+  border: none !important;
+  border-bottom: 1px solid var(--ds-line) !important;
+  border-radius: 0 !important;
+  padding: 10px 4px !important;
+  margin: 0 !important;
+  transition: background .18s;
+}
+.transcript-card { padding: 12px 14px !important; border-radius: 12px !important; margin-bottom: 4px !important; border-bottom: none !important; background: rgba(255,255,255,.35) !important; cursor: pointer; }
+.transcript-card:hover, .row:hover { background: rgba(21,101,192,.045) !important; }
+.transcript-title { font-weight: 600 !important; color: var(--ds-text) !important; }
+.transcript-meta, .meta { color: var(--ds-hint) !important; font-size: 11.5px !important; }
+
+/* ---------- Legacy stat-grid / grids ---------- */
+.stat-grid { display: grid; gap: 14px !important; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); margin-bottom: 20px !important; }
+.grid-2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); gap: 14px !important; margin-bottom: 16px !important; }
+.grid-3 { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 14px !important; margin-bottom: 16px !important; }
+.kpi-row { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px !important; }
+.kpi-row.five { grid-template-columns: repeat(5, 1fr); }
+.kpi-row.three { grid-template-columns: repeat(3, 1fr); }
+
+/* ---------- Chart canvases ---------- */
+.chart-wrap { padding: 8px 4px; }
+
+/* ---------- Modal ---------- */
+.modal-bg {
+  background: rgba(15,23,42,.35) !important;
+  backdrop-filter: blur(6px);
+}
+.modal {
+  background: rgba(255,255,255,.9) !important;
+  backdrop-filter: blur(20px) saturate(180%);
+  border-radius: 20px !important;
+  box-shadow: 0 30px 60px -30px rgba(30,20,70,.35), inset 0 1px 1px rgba(255,255,255,.7) !important;
+}
+
+/* ---------- Utility ---------- */
+.loading { color: var(--ds-muted); font-size: 12.5px; }
+footer { text-align: center; color: var(--ds-hint) !important; font-size: 11.5px !important; margin-top: 40px !important; padding-bottom: 30px; }
+
+/* ---------- Reveal animation ---------- */
+.tab-content.active > * { animation: revealIn .5s cubic-bezier(.3,.8,.3,1) both; }
+@keyframes revealIn { from { opacity: 0; transform: translateY(14px); } to { opacity: 1; transform: none; } }
+@media (prefers-reduced-motion: reduce) { .tab-content.active > * { animation: none; } body::before, body::after { animation: none; } }
