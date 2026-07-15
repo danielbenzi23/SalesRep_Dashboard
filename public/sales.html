@@ -108,10 +108,97 @@
     <div class="header-right">
       <select id="rep-select" style="display:none"></select>
       <span class="updated"><span id="updated-label">—</span></span>
+      <button id="log-activity-btn" class="cta" style="padding:8px 16px;font-size:12px;font-weight:600;">＋ Log activity</button>
       <button class="refresh-btn" id="refresh-btn" title="Refresh">
         <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M14 8c0 3.3-2.7 6-6 6S2 11.3 2 8s2.7-6 6-6c1.5 0 2.8.5 3.8 1.4M14 2v3h-3"/></svg>
       </button>
       <a class="logout" href="/login.html" onclick="logout(event)">Log out</a>
+    </div>
+  </div>
+
+  <!-- LOG ACTIVITY MODAL -->
+  <div id="log-modal-bg" class="modal-bg" style="display:none;position:fixed;inset:0;z-index:9999;align-items:center;justify-content:center;">
+    <div class="modal" style="width:min(560px,92vw);max-height:90vh;overflow:auto;padding:24px 26px;">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;">
+        <div style="font-family:'Poppins',sans-serif;font-weight:600;font-size:18px;color:var(--ds-primary-3);">Log activity to HubSpot</div>
+        <button id="log-close" style="background:transparent;border:none;font-size:22px;cursor:pointer;color:var(--ds-muted);">✕</button>
+      </div>
+
+      <div style="display:flex;gap:4px;padding:4px;background:rgba(21,101,192,.08);border-radius:999px;width:fit-content;margin-bottom:14px;">
+        <button class="log-tab active" data-log-tab="email" style="padding:7px 16px;font-size:12px;font-weight:600;border-radius:999px;border:none;cursor:pointer;background:#fff;color:var(--ds-primary-3);">📧 Email</button>
+        <button class="log-tab" data-log-tab="meeting" style="padding:7px 16px;font-size:12px;font-weight:600;border-radius:999px;border:none;cursor:pointer;background:transparent;color:var(--ds-muted);">🎥 Meeting</button>
+        <button class="log-tab" data-log-tab="note" style="padding:7px 16px;font-size:12px;font-weight:600;border-radius:999px;border:none;cursor:pointer;background:transparent;color:var(--ds-muted);">📝 Note</button>
+      </div>
+
+      <!-- Shared: contact search -->
+      <div style="margin-bottom:12px;">
+        <label style="display:block;font-size:11px;font-weight:600;color:var(--ds-muted);text-transform:uppercase;letter-spacing:.06em;margin-bottom:5px;">Contact (optional)</label>
+        <input type="text" id="log-contact-search" placeholder="Search by email, name, or company…" style="width:100%;" autocomplete="off" />
+        <div id="log-contact-results" style="max-height:180px;overflow:auto;margin-top:4px;background:rgba(255,255,255,.6);border-radius:10px;display:none;"></div>
+        <div id="log-contact-selected" style="margin-top:6px;font-size:12px;color:var(--ds-primary);"></div>
+      </div>
+
+      <!-- Email form -->
+      <div class="log-form" data-log-form="email">
+        <div style="margin-bottom:10px;">
+          <label style="display:block;font-size:11px;font-weight:600;color:var(--ds-muted);text-transform:uppercase;letter-spacing:.06em;margin-bottom:5px;">To *</label>
+          <input type="email" id="log-email-to" placeholder="recipient@company.edu" style="width:100%;" />
+        </div>
+        <div style="margin-bottom:10px;">
+          <label style="display:block;font-size:11px;font-weight:600;color:var(--ds-muted);text-transform:uppercase;letter-spacing:.06em;margin-bottom:5px;">Subject *</label>
+          <input type="text" id="log-email-subject" placeholder="Following up on our conversation" style="width:100%;" />
+        </div>
+        <div>
+          <label style="display:block;font-size:11px;font-weight:600;color:var(--ds-muted);text-transform:uppercase;letter-spacing:.06em;margin-bottom:5px;">Body</label>
+          <textarea id="log-email-body" rows="6" placeholder="Email content…" style="width:100%;resize:vertical;"></textarea>
+        </div>
+      </div>
+
+      <!-- Meeting form -->
+      <div class="log-form" data-log-form="meeting" style="display:none;">
+        <div style="margin-bottom:10px;">
+          <label style="display:block;font-size:11px;font-weight:600;color:var(--ds-muted);text-transform:uppercase;letter-spacing:.06em;margin-bottom:5px;">Title *</label>
+          <input type="text" id="log-meeting-title" placeholder="Discovery call with University of X" style="width:100%;" />
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px;">
+          <div>
+            <label style="display:block;font-size:11px;font-weight:600;color:var(--ds-muted);text-transform:uppercase;letter-spacing:.06em;margin-bottom:5px;">Start</label>
+            <input type="datetime-local" id="log-meeting-start" style="width:100%;" />
+          </div>
+          <div>
+            <label style="display:block;font-size:11px;font-weight:600;color:var(--ds-muted);text-transform:uppercase;letter-spacing:.06em;margin-bottom:5px;">Duration (min)</label>
+            <input type="number" id="log-meeting-duration" value="30" min="5" step="5" style="width:100%;" />
+          </div>
+        </div>
+        <div style="margin-bottom:10px;">
+          <label style="display:block;font-size:11px;font-weight:600;color:var(--ds-muted);text-transform:uppercase;letter-spacing:.06em;margin-bottom:5px;">Outcome</label>
+          <select id="log-meeting-outcome" style="width:100%;">
+            <option value="COMPLETED">Completed</option>
+            <option value="SCHEDULED">Scheduled</option>
+            <option value="RESCHEDULED">Rescheduled</option>
+            <option value="NO_SHOW">No show</option>
+            <option value="CANCELED">Canceled</option>
+          </select>
+        </div>
+        <div>
+          <label style="display:block;font-size:11px;font-weight:600;color:var(--ds-muted);text-transform:uppercase;letter-spacing:.06em;margin-bottom:5px;">Notes</label>
+          <textarea id="log-meeting-notes" rows="6" placeholder="Key discussion points, action items, next steps…" style="width:100%;resize:vertical;"></textarea>
+        </div>
+      </div>
+
+      <!-- Note form -->
+      <div class="log-form" data-log-form="note" style="display:none;">
+        <div>
+          <label style="display:block;font-size:11px;font-weight:600;color:var(--ds-muted);text-transform:uppercase;letter-spacing:.06em;margin-bottom:5px;">Note *</label>
+          <textarea id="log-note-body" rows="8" placeholder="Free-form note (visible on the contact/deal in HubSpot)…" style="width:100%;resize:vertical;"></textarea>
+        </div>
+      </div>
+
+      <div id="log-status" style="margin-top:14px;font-size:12.5px;color:var(--ds-muted);min-height:16px;"></div>
+      <div style="display:flex;justify-content:flex-end;gap:10px;margin-top:14px;">
+        <button id="log-cancel" style="background:transparent;border:1px solid rgba(0,0,0,.15);color:var(--ds-muted);padding:9px 18px;border-radius:999px;font-weight:600;cursor:pointer;">Cancel</button>
+        <button id="log-submit" class="cta" style="padding:9px 22px;">Log to HubSpot</button>
+      </div>
     </div>
   </div>
 
@@ -1869,12 +1956,153 @@
     progress.textContent = summary.join(' · ');
     btn.disabled = false; btn.textContent = '⚡ Analyze all pending';
 
-    // Refresh: invalidate caches
-    trAllCache = null;
+    // IMPORTANT: do NOT re-fetch — Confluence label indexing lags 5-30s so a
+    // fresh fetch would still show "not analyzed" for the ones we just processed.
+    // We already mutated t.has_insight + t.sentiment in the worker; re-render
+    // straight from the (mutated) cache.
+    renderConversationsPage();
+    // Invalidate Meeting Intel cache; kick a background refresh so user sees
+    // fresh aggregation on next tab visit. Wait 8s to let Confluence catch up.
     miCache = null;
-    await renderTranscripts('all-transcripts', 50);
+    setTimeout(() => { loadMeetingIntel(true).catch(() => {}); }, 8000);
   }
   window.bulkAnalyzePending = bulkAnalyzePending;
+
+  // ---------- LOG ACTIVITY MODAL ----------
+  let logSelectedContact = null;
+  let logActiveTab = 'email';
+  let logSearchTimer = null;
+
+  function openLogModal() {
+    document.getElementById('log-modal-bg').style.display = 'flex';
+    // Default start time = now (local)
+    const now = new Date();
+    now.setMinutes(now.getMinutes() - now.getTimezoneOffset());
+    document.getElementById('log-meeting-start').value = now.toISOString().slice(0, 16);
+  }
+  function closeLogModal() {
+    document.getElementById('log-modal-bg').style.display = 'none';
+    document.getElementById('log-status').textContent = '';
+    logSelectedContact = null;
+    document.getElementById('log-contact-selected').innerHTML = '';
+    document.getElementById('log-contact-search').value = '';
+    document.getElementById('log-contact-results').style.display = 'none';
+  }
+  function switchLogTab(name) {
+    logActiveTab = name;
+    document.querySelectorAll('.log-tab').forEach(t => {
+      const on = t.dataset.logTab === name;
+      t.classList.toggle('active', on);
+      t.style.background = on ? '#fff' : 'transparent';
+      t.style.color = on ? 'var(--ds-primary-3)' : 'var(--ds-muted)';
+    });
+    document.querySelectorAll('.log-form').forEach(f => {
+      f.style.display = f.dataset.logForm === name ? '' : 'none';
+    });
+  }
+
+  async function searchLogContacts(q) {
+    const box = document.getElementById('log-contact-results');
+    if (!q || q.length < 2) { box.style.display = 'none'; return; }
+    try {
+      const r = await fetch(`/api/sales-data?action=search_contact&q=${encodeURIComponent(q)}`);
+      const d = await r.json();
+      const results = d.results || [];
+      if (!results.length) { box.style.display = 'none'; return; }
+      box.innerHTML = results.map(c => `
+        <div class="log-contact-row" data-id="${c.id}" data-email="${escapeHtml(c.email || '')}" data-name="${escapeHtml(c.name || '')}" data-company="${escapeHtml(c.company || '')}"
+             style="padding:8px 12px;cursor:pointer;border-bottom:1px solid rgba(0,0,0,.05);font-size:12.5px;">
+          <div style="font-weight:600;color:var(--ds-text);">${escapeHtml(c.name || '(no name)')}${c.company ? ` <span style="color:var(--ds-muted);font-weight:400;">· ${escapeHtml(c.company)}</span>` : ''}</div>
+          <div style="color:var(--ds-muted);font-size:11px;">${escapeHtml(c.email || '')}</div>
+        </div>
+      `).join('');
+      box.style.display = 'block';
+      box.querySelectorAll('.log-contact-row').forEach(row => {
+        row.addEventListener('click', () => {
+          logSelectedContact = {
+            id: row.dataset.id,
+            email: row.dataset.email,
+            name: row.dataset.name,
+            company: row.dataset.company
+          };
+          document.getElementById('log-contact-selected').innerHTML =
+            `✓ Selected: <strong>${row.dataset.name || '(no name)'}</strong> ${row.dataset.email ? '· ' + row.dataset.email : ''} <a href="#" style="color:var(--ds-red);margin-left:8px;font-size:11px;" onclick="event.preventDefault();document.getElementById('log-contact-selected').innerHTML='';window.__clearLogContact();">clear</a>`;
+          box.style.display = 'none';
+          // Auto-populate email 'to' when contact has email
+          if (logActiveTab === 'email' && row.dataset.email && !document.getElementById('log-email-to').value) {
+            document.getElementById('log-email-to').value = row.dataset.email;
+          }
+        });
+      });
+    } catch (e) {
+      box.style.display = 'none';
+    }
+  }
+  window.__clearLogContact = () => { logSelectedContact = null; };
+
+  async function submitLogActivity() {
+    const status = document.getElementById('log-status');
+    const btn = document.getElementById('log-submit');
+    btn.disabled = true;
+    status.textContent = 'Sending to HubSpot…';
+    const payload = { contactId: logSelectedContact?.id || null };
+    if (logActiveTab === 'email') {
+      payload.to = document.getElementById('log-email-to').value.trim();
+      payload.subject = document.getElementById('log-email-subject').value.trim();
+      payload.body = document.getElementById('log-email-body').value.trim();
+      if (!payload.to || !payload.subject) { status.textContent = 'To + subject required'; btn.disabled = false; return; }
+    } else if (logActiveTab === 'meeting') {
+      payload.title = document.getElementById('log-meeting-title').value.trim();
+      const startVal = document.getElementById('log-meeting-start').value;
+      payload.startTime = startVal ? new Date(startVal).getTime() : Date.now();
+      payload.durationMinutes = parseInt(document.getElementById('log-meeting-duration').value, 10) || 30;
+      payload.outcome = document.getElementById('log-meeting-outcome').value;
+      payload.notes = document.getElementById('log-meeting-notes').value.trim();
+      if (!payload.title) { status.textContent = 'Title required'; btn.disabled = false; return; }
+    } else {
+      payload.body = document.getElementById('log-note-body').value.trim();
+      if (!payload.body) { status.textContent = 'Note body required'; btn.disabled = false; return; }
+    }
+    try {
+      const r = await fetch(`/api/sales-data?action=log_${logActiveTab}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+      const j = await r.json();
+      if (!r.ok) throw new Error(j.error || `HubSpot ${r.status}`);
+      status.innerHTML = `✅ Logged to HubSpot (id: <code>${j.id}</code>). Closing in 2s…`;
+      // Track analytics
+      if (window.trackEvent) window.trackEvent('activity_logged', { type: logActiveTab, has_contact: !!payload.contactId });
+      setTimeout(() => {
+        closeLogModal();
+        // Clear the form fields
+        ['log-email-to','log-email-subject','log-email-body','log-meeting-title','log-meeting-notes','log-note-body'].forEach(id => {
+          const el = document.getElementById(id); if (el) el.value = '';
+        });
+      }, 2000);
+    } catch (e) {
+      status.innerHTML = `<span style="color:var(--ds-red);">❌ ${e.message}</span>`;
+    } finally {
+      btn.disabled = false;
+    }
+  }
+
+  // Wire it up
+  document.getElementById('log-activity-btn')?.addEventListener('click', openLogModal);
+  document.getElementById('log-close')?.addEventListener('click', closeLogModal);
+  document.getElementById('log-cancel')?.addEventListener('click', closeLogModal);
+  document.getElementById('log-submit')?.addEventListener('click', submitLogActivity);
+  document.getElementById('log-modal-bg')?.addEventListener('click', (e) => {
+    if (e.target.id === 'log-modal-bg') closeLogModal();
+  });
+  document.querySelectorAll('.log-tab').forEach(t => {
+    t.addEventListener('click', () => switchLogTab(t.dataset.logTab));
+  });
+  document.getElementById('log-contact-search')?.addEventListener('input', (e) => {
+    clearTimeout(logSearchTimer);
+    logSearchTimer = setTimeout(() => searchLogContacts(e.target.value.trim()), 300);
+  });
 
   // -------- MEETING INTEL DASHBOARD --------
   let miCache = null;
