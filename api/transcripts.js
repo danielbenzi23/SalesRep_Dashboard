@@ -131,7 +131,29 @@ async function runHandler(req, res) {
         ]);
       } catch (e) { return res.status(502).json({ error: 'confluence_failed', detail: e.message }); }
 
-      const analyzedByLabel = transcripts.filter(t => (t.labels || []).includes(ANALYZED_LABEL)).length;
+      // Fallback: if CQL returned 0 results (indexing lag or wildcard quirk),
+      // scan each analyzed transcript for its insight child page directly.
+      const analyzedTranscripts = transcripts.filter(t => (t.labels || []).includes(ANALYZED_LABEL));
+      let fallbackUsed = false;
+      if (insightPages.length === 0 && analyzedTranscripts.length > 0) {
+        fallbackUsed = true;
+        // Concurrency 5 to stay under Confluence rate limit
+        const results = [];
+        const queue = analyzedTranscripts.slice();
+        async function worker() {
+          while (queue.length) {
+            const t = queue.shift();
+            try {
+              const child = await findInsightChildPage(t.page_id);
+              if (child) results.push(child);
+            } catch {}
+          }
+        }
+        await Promise.all(Array.from({ length: 5 }, worker));
+        insightPages = results;
+      }
+
+      const analyzedByLabel = analyzedTranscripts.length;
 
       const insights = insightPages
         .map(p => {
@@ -192,6 +214,7 @@ async function runHandler(req, res) {
         total_transcripts: transcripts.length,
         total_analyzed_by_label: analyzedByLabel,
         total_insight_pages_found: insightPages.length,
+        _fallback_scan_used: fallbackUsed,
         total_analyzed: total,
         avg_sentiment_score: sentimentScoreCount > 0 ? sentimentScoreSum / sentimentScoreCount : 0,
         sentiment_distribution: sentimentCounts,
