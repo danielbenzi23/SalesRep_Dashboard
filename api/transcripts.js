@@ -259,10 +259,23 @@ export default async function handler(req, res) {
       analyzed_at: new Date().toISOString(), analyzed_by: user.email, ...insight
     };
     try {
-      if (existing && force) {
+      if (existing) {
+        // Cache-lookup returned existing (only when force=true reaches here) — update it
         await updateInsightChildPage(existing.id, existing.version?.number || 1, full);
       } else {
-        await createInsightChildPage(confluence_page_id, full);
+        try {
+          await createInsightChildPage(confluence_page_id, full);
+        } catch (createErr) {
+          // Confluence returns 400 with "A page with this title already exists" if the
+          // cache-check missed (indexing lag / different endpoint / CQL vs. child listing).
+          // Recover by finding the existing child page and updating it in place.
+          const isDuplicate = /already exists|A page with this title|title.*already/i.test(createErr.message || '');
+          if (!isDuplicate) throw createErr;
+          const recovered = await findInsightChildPage(confluence_page_id);
+          if (!recovered) throw createErr;
+          await updateInsightChildPage(recovered.id, recovered.version?.number || 1, full);
+          full._recovered_from_duplicate = true;
+        }
       }
       const labels = [ANALYZED_LABEL];
       if (insight.sentiment) labels.push(`sentiment-${insight.sentiment.replace(/_/g, '-')}`);
