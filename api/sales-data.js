@@ -338,6 +338,126 @@ export default async function handler(req, res) {
     return todayAiHandler({ hsToken, ownerId, ownerName: nm, annualQuota: q, res });
   }
 
+  // Contact search (autocomplete for logging modals)
+  if (urlObj.searchParams.get('action') === 'search_contact') {
+    const q = (urlObj.searchParams.get('q') || '').trim();
+    if (!q) return res.status(200).json({ results: [] });
+    try {
+      const body = {
+        filterGroups: [
+          { filters: [{ propertyName: 'email', operator: 'CONTAINS_TOKEN', value: q }] },
+          { filters: [{ propertyName: 'firstname', operator: 'CONTAINS_TOKEN', value: q }] },
+          { filters: [{ propertyName: 'lastname', operator: 'CONTAINS_TOKEN', value: q }] },
+          { filters: [{ propertyName: 'company', operator: 'CONTAINS_TOKEN', value: q }] }
+        ],
+        properties: ['email', 'firstname', 'lastname', 'company', 'hubspot_owner_id'],
+        limit: 10
+      };
+      const r = await hsSearch(hsToken, 'contacts', body);
+      const results = (r.results || []).map(c => ({
+        id: c.id,
+        email: c.properties.email || null,
+        name: [c.properties.firstname, c.properties.lastname].filter(Boolean).join(' ') || null,
+        company: c.properties.company || null
+      }));
+      return res.status(200).json({ results });
+    } catch (e) {
+      return res.status(500).json({ error: e.message });
+    }
+  }
+
+  // Logging actions — POST engagement to HubSpot on behalf of the current rep
+  if (req.method === 'POST' && ['log_email', 'log_meeting', 'log_note'].includes(urlObj.searchParams.get('action'))) {
+    const action = urlObj.searchParams.get('action');
+    let payload;
+    try { payload = typeof req.body === 'object' ? req.body : JSON.parse(req.body || '{}'); }
+    catch { return res.status(400).json({ error: 'Invalid JSON body' }); }
+
+    const contactId = payload.contactId || null;
+    const nowMs = Date.now();
+
+    // Build properties + associations per action type
+    let objectType, properties;
+    if (action === 'log_email') {
+      const to = (payload.to || '').trim();
+      const subject = (payload.subject || '').trim();
+      const bodyText = (payload.body || '').trim();
+      if (!to || !subject) return res.status(400).json({ error: 'to and subject required' });
+      objectType = 'emails';
+      properties = {
+        hs_timestamp: String(payload.timestamp || nowMs),
+        hs_email_direction: 'EMAIL',
+        hs_email_status: 'SENT',
+        hubspot_owner_id: ownerId,
+        hs_email_subject: subject,
+        hs_email_text: bodyText,
+        hs_email_headers: JSON.stringify({ to: [{ email: to }], from: { email: user.email } })
+      };
+    } else if (action === 'log_meeting') {
+      const title = (payload.title || '').trim();
+      const startMs = parseInt(payload.startTime || nowMs, 10);
+      const durationMin = parseInt(payload.durationMinutes || 30, 10);
+      const notesBody = (payload.notes || '').trim();
+      const outcome = (payload.outcome || 'COMPLETED').toUpperCase();
+      if (!title) return res.status(400).json({ error: 'title required' });
+      objectType = 'meetings';
+      properties = {
+        hs_timestamp: String(startMs),
+        hs_meeting_title: title,
+        hs_meeting_body: notesBody,
+        hs_meeting_start_time: String(startMs),
+        hs_meeting_end_time: String(startMs + durationMin * 60 * 1000),
+        hs_meeting_outcome: outcome,
+        hubspot_owner_id: ownerId
+      };
+    } else if (action === 'log_note') {
+      const noteBody = (payload.body || '').trim();
+      if (!noteBody) return res.status(400).json({ error: 'body required' });
+      objectType = 'notes';
+      properties = {
+        hs_timestamp: String(payload.timestamp || nowMs),
+        hs_note_body: noteBody,
+        hubspot_owner_id: ownerId
+      };
+    }
+
+    // Build associations — HubSpot v3 uses associations array with associationTypeId
+    // (See https://developers.hubspot.com/docs/api/crm/associations)
+    const CONTACT_ASSOC_TYPE = {
+      emails: 198,      // email → contact
+      meetings: 200,    // meeting → contact
+      notes: 202        // note → contact
+    };
+    const body = { properties };
+    if (contactId) {
+      body.associations = [{
+        to: { id: String(contactId) },
+        types: [{ associationCategory: 'HUBSPOT_DEFINED', associationTypeId: CONTACT_ASSOC_TYPE[objectType] }]
+      }];
+    }
+
+    try {
+      const r = await fetch(`https://api.hubapi.com/crm/v3/objects/${objectType}`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${hsToken}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify(body)
+      });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok) {
+        return res.status(r.status).json({ error: j.message || `HubSpot ${r.status}`, detail: j });
+      }
+      return res.status(200).json({
+        ok: true,
+        id: j.id,
+        type: objectType,
+        hs_url: `https://app.hubspot.com/contacts/${j.portalId || ''}/${objectType}/${j.id}`,
+        created_by: user.email
+      });
+    } catch (e) {
+      return res.status(500).json({ error: e.message });
+    }
+  }
+
   const ownerName = OWNER_ID_TO_NAME[ownerId] || 'Unknown';
   const annualQuota = REP_ANNUAL_QUOTA[ownerId] || 0;
 
