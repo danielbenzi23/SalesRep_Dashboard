@@ -1919,8 +1919,11 @@
     const concurrency = 2;
     const queue = pending.slice();
 
+    // Detect fatal error patterns and abort early instead of hammering 20+ times
+    let fatalError = null;
+
     async function worker() {
-      while (queue.length) {
+      while (queue.length && !fatalError) {
         const t = queue.shift();
         try {
           const r = await fetch('/api/transcripts', {
@@ -1928,32 +1931,66 @@
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ confluence_page_id: t.page_id })
           });
-          if (!r.ok) apiFailed++;
           const j = await r.json().catch(() => ({}));
-          if (j._save_error) {
+          if (!r.ok) {
+            apiFailed++;
+            const msg = (j.error || j.detail || j.message || `HTTP ${r.status}`).toString();
+            if (errorSamples.length < 3) errorSamples.push(msg.slice(0, 180));
+            // Fatal: no Anthropic credits, no key, or auth issue → stop the whole batch
+            if (/credit balance is too low|invalid_request_error|ANTHROPIC_API_KEY|unauthorized|authentication/i.test(msg)) {
+              fatalError = msg;
+            }
+          } else if (j._save_error) {
             saveFailed++;
-            if (errorSamples.length < 3) errorSamples.push(j._save_error.slice(0, 100));
+            if (errorSamples.length < 3) errorSamples.push(j._save_error.slice(0, 180));
           } else if (j.sentiment) {
             saveOk++;
             t.has_insight = true;
             t.sentiment = j.sentiment;
+          } else {
+            // 200 OK but no sentiment field — unusual
+            apiFailed++;
+            if (errorSamples.length < 3) errorSamples.push('200 OK but no sentiment in response');
           }
-        } catch (e) { apiFailed++; }
+        } catch (e) {
+          apiFailed++;
+          if (errorSamples.length < 3) errorSamples.push(e.message || 'fetch failed');
+        }
         done++;
         const bits = [`Analyzed ${done} / ${pending.length}`];
         if (saveOk) bits.push(`${saveOk} saved`);
         if (saveFailed) bits.push(`⚠ ${saveFailed} save-failed`);
         if (apiFailed) bits.push(`${apiFailed} api-failed`);
-        progress.textContent = bits.join(' · ');
+        let line = bits.join(' · ');
+        // Show sample error DURING the batch so user knows what's wrong immediately
+        if (errorSamples.length && (saveFailed || apiFailed)) {
+          line += ` — sample: "${errorSamples[0].slice(0, 120)}"`;
+        }
+        progress.textContent = line;
       }
     }
 
     await Promise.all(Array.from({ length: concurrency }, worker));
-    const summary = [`✓ Done`, `${saveOk} saved to Confluence`];
-    if (saveFailed) summary.push(`${saveFailed} save-failed`);
-    if (apiFailed) summary.push(`${apiFailed} api-failed`);
-    if (errorSamples.length) summary.push(`(sample error: ${errorSamples[0]})`);
-    progress.textContent = summary.join(' · ');
+
+    // If we bailed early with a fatal error, show a big red banner with concrete guidance
+    if (fatalError) {
+      const isCreditIssue = /credit balance is too low/i.test(fatalError);
+      progress.innerHTML = `
+        <div style="background:rgba(224,122,95,.12);border:1px solid rgba(224,122,95,.3);border-radius:12px;padding:12px 16px;margin-top:6px;">
+          <div style="font-weight:600;color:#B0503A;font-size:13px;margin-bottom:4px;">❌ Analysis aborted — ${isCreditIssue ? 'Anthropic API credits exhausted' : 'fatal error'}</div>
+          <div style="color:var(--ds-muted);font-size:12px;line-height:1.4;">
+            ${escapeHtml(fatalError.slice(0, 300))}
+          </div>
+          ${isCreditIssue ? `<div style="margin-top:8px;font-size:12px;"><a href="https://console.anthropic.com/settings/billing" target="_blank" style="color:var(--ds-primary);font-weight:600;">→ Add credits at console.anthropic.com/settings/billing</a></div>` : ''}
+          <div style="color:var(--ds-hint);font-size:11px;margin-top:6px;">Processed ${done}/${pending.length} before stopping · ${saveOk} succeeded</div>
+        </div>`;
+    } else {
+      const summary = [`✓ Done`, `${saveOk} saved to Confluence`];
+      if (saveFailed) summary.push(`${saveFailed} save-failed`);
+      if (apiFailed) summary.push(`${apiFailed} api-failed`);
+      if (errorSamples.length) summary.push(`(sample error: ${errorSamples[0]})`);
+      progress.textContent = summary.join(' · ');
+    }
     btn.disabled = false; btn.textContent = '⚡ Analyze all pending';
 
     // IMPORTANT: do NOT re-fetch — Confluence label indexing lags 5-30s so a
