@@ -955,10 +955,21 @@
       window._currentInsightId = pageId;
       document.getElementById('modal-title').textContent = ins.meeting_title || 'Meeting insight';
       document.getElementById('modal-body').innerHTML = renderInsight(ins);
-      // After successful new analysis, refresh the transcript list to update badges
-      if (!ins._cached) {
+      // If save to Confluence failed silently, show a big warning at top of modal
+      if (ins._save_error) {
+        const body = document.getElementById('modal-body');
+        body.insertAdjacentHTML('afterbegin', `
+          <div style="background:rgba(224,122,95,.12);border:1px solid rgba(224,122,95,.3);border-radius:10px;padding:10px 14px;margin-bottom:12px;">
+            <div style="font-weight:600;color:#B0503A;font-size:12.5px;">⚠ Analyzed but failed to save to Confluence</div>
+            <div style="color:var(--ds-muted);font-size:11.5px;margin-top:3px;font-family:ui-monospace,Menlo,monospace;word-break:break-word;">${escapeHtml(ins._save_error.slice(0, 300))}</div>
+          </div>`);
+      }
+      // Update the badge locally (avoid Confluence label indexing lag by NOT re-fetching)
+      if (!ins._cached && !ins._save_error && ins.sentiment) {
+        const t = (trAllCache?.results || []).find(x => x.page_id === pageId);
+        if (t) { t.has_insight = true; t.sentiment = ins.sentiment; }
         const activeTab = document.querySelector('.tab.active')?.dataset.tab;
-        if (activeTab === 'conversations') renderTranscripts('all-transcripts', 50);
+        if (activeTab === 'conversations') renderConversationsPage();
         if (activeTab === 'today') renderTranscripts('recent-meetings', 5);
       }
     } catch (e) {
@@ -979,7 +990,11 @@
     const quotes = (ins.key_quotes || []).map(q => `<div class="quote">"${escapeHtml(q.quote || '')}" <span style="font-style:normal;color:#888780">— ${escapeHtml(q.speaker || '?')} · ${escapeHtml(q.why_it_matters || '')}</span></div>`).join('');
     const cachedTag = ins._cached
       ? `<span style="font-size:11px;color:#888780;margin-left:8px">📌 from cache · <a href="#" onclick="reanalyzeCurrent();return false" style="color:#2D58A8">re-analyze</a></span>`
-      : `<span style="font-size:11px;color:#0F6E56;margin-left:8px">✓ fresh analysis saved to Confluence</span>`;
+      : (ins._save_error
+        ? `<span style="font-size:11px;color:#B0503A;margin-left:8px">⚠ fresh analysis but NOT saved (see warning above)</span>`
+        : (ins._recovered_from_duplicate
+          ? `<span style="font-size:11px;color:#0F6E56;margin-left:8px">✓ fresh analysis · updated existing Confluence page</span>`
+          : `<span style="font-size:11px;color:#0F6E56;margin-left:8px">✓ fresh analysis saved to Confluence</span>`));
     return `
       <div style="margin-bottom:12px">${sBadge}${score}${cachedTag}</div>
       <div style="font-size:13px;color:#444;margin-bottom:12px;line-height:1.5">${escapeHtml(ins.summary || '')}</div>
