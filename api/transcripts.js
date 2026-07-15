@@ -1,13 +1,10 @@
 // /api/transcripts — combined list + insight (was 2 functions)
 // GET  /api/transcripts                                → list Confluence transcripts
-// POST /api/transcripts { confluence_page_id, force? } → analyze with Claude, cache in Vercel Blob
+// POST /api/transcripts { confluence_page_id, force? } → analyze with Claude, cache in Confluence
 //
-// STORAGE MODEL:
-//   New insights live at transcript-insights/<pageId>.json in Vercel Blob.
-//   Legacy: pre-Blob transcripts (e.g. Roosevelt) still have a "Claude Insights" child
-//   page in Confluence — we READ those as a fallback but NEVER write to Confluence anymore.
-//   This dodges Confluence's space-wide unique-title constraint that was blocking every
-//   analysis after the first one.
+// STORAGE: each transcript gets its own child page named "Claude Insights - <parentId>"
+//   (unique per space to avoid Confluence's duplicate-title constraint).
+// LEGACY: Roosevelt's page is still just "Claude Insights" — find/update handles both.
 
 import { verifyAuthCookie } from '../lib/auth.js';
 import {
@@ -16,60 +13,13 @@ import {
   fetchPage,
   htmlToText,
   findInsightChildPage,
+  findAllInsightPages,
+  createInsightChildPage,
+  updateInsightChildPage,
+  addLabels,
   extractInsightJson,
   ANALYZED_LABEL
 } from '../lib/confluence.js';
-import { put, list } from '@vercel/blob';
-
-// ============================================================
-// Vercel Blob storage for transcript insights
-// Key layout: transcript-insights/<confluence_page_id>.json
-// Same Blob store as lead-scoring snapshots — just a different prefix.
-// ============================================================
-const INSIGHT_PREFIX = 'transcript-insights/';
-
-async function saveInsight(pageId, insightJson) {
-  const key = `${INSIGHT_PREFIX}${pageId}.json`;
-  return put(key, JSON.stringify(insightJson), {
-    access: 'public',
-    addRandomSuffix: false,
-    contentType: 'application/json',
-    cacheControlMaxAge: 0,
-    allowOverwrite: true
-  });
-}
-
-async function getInsight(pageId) {
-  const { blobs } = await list({ prefix: `${INSIGHT_PREFIX}${pageId}` });
-  const match = blobs.find(b => b.pathname === `${INSIGHT_PREFIX}${pageId}.json`);
-  if (!match) return null;
-  const r = await fetch(match.url);
-  if (!r.ok) return null;
-  try { return await r.json(); } catch { return null; }
-}
-
-// List all insights — returns [{ pageId, url, uploadedAt, size }]
-async function listInsights() {
-  const out = [];
-  let cursor;
-  do {
-    const res = await list({ prefix: INSIGHT_PREFIX, cursor });
-    for (const b of res.blobs || []) {
-      const m = b.pathname.match(/transcript-insights\/(\d+)\.json$/);
-      if (m) out.push({ pageId: m[1], url: b.url, uploadedAt: b.uploadedAt, size: b.size });
-    }
-    cursor = res.cursor;
-  } while (cursor);
-  return out;
-}
-
-// Fetch multiple insight blobs in parallel
-async function fetchInsightBatch(urls) {
-  return Promise.all(urls.map(async u => {
-    try { const r = await fetch(u); if (!r.ok) return null; return await r.json(); }
-    catch { return null; }
-  }));
-}
 
 export const config = { maxDuration: 60 };
 
@@ -144,6 +94,21 @@ async function analyze({ title, date, rep_email, transcript_text }) {
 }
 
 export default async function handler(req, res) {
+  try {
+    return await runHandler(req, res);
+  } catch (e) {
+    console.error('[/api/transcripts] uncaught:', e);
+    if (!res.headersSent) {
+      return res.status(500).json({
+        error: 'internal_error',
+        detail: e.message || String(e),
+        stack: (e.stack || '').split('\n').slice(0, 5).join(' | ')
+      });
+    }
+  }
+}
+
+async function runHandler(req, res) {
   const token = process.env.DASHBOARD_TOKEN;
   if (!token) return res.status(500).json({ error: 'DASHBOARD_TOKEN not set' });
   const cookies = req.headers.cookie || '';
@@ -156,43 +121,25 @@ export default async function handler(req, res) {
     const url = new URL(req.url, `http://${req.headers.host || 'x'}`);
     const action = url.searchParams.get('action');
 
-    // ===== ANALYTICS: aggregate all insights (Blob primary + Confluence legacy) =====
+    // ===== ANALYTICS: aggregate all "Claude Insights*" child pages =====
     if (action === 'analytics') {
-      let transcripts, blobInsightRefs;
+      let transcripts, insightPages;
       try {
-        [transcripts, blobInsightRefs] = await Promise.all([
+        [transcripts, insightPages] = await Promise.all([
           listChildPages(transcriptsParentId(), { limit: 200 }),
-          listInsights().catch(() => [])
+          findAllInsightPages(200)
         ]);
       } catch (e) { return res.status(502).json({ error: 'confluence_failed', detail: e.message }); }
 
-      // Set of pageIds already in Blob (so we don't double-count legacy pages)
-      const blobPageIds = new Set(blobInsightRefs.map(b => b.pageId));
-
-      // Fetch all Blob insights in parallel
-      const blobPayloads = await fetchInsightBatch(blobInsightRefs.map(b => b.url));
-      const blobInsights = blobPayloads
-        .map((p, i) => p ? { ...p, _createdAt: blobInsightRefs[i].uploadedAt || null } : null)
-        .filter(Boolean);
-
-      // Legacy: pull any transcript that has label `claude-analyzed` but no Blob insight yet
-      // (Roosevelt & friends). Look up their Confluence child page in parallel.
-      const legacyCandidates = transcripts
-        .filter(t => (t.labels || []).includes(ANALYZED_LABEL) && !blobPageIds.has(t.page_id));
-
-      const legacyResults = await Promise.all(legacyCandidates.map(async t => {
-        try {
-          const child = await findInsightChildPage(t.page_id);
-          if (!child) return null;
-          const parsed = extractInsightJson(child.body?.storage?.value);
-          if (!parsed) return null;
-          return { ...parsed, _createdAt: child.history?.createdDate || null };
-        } catch { return null; }
-      }));
-      const legacyInsights = legacyResults.filter(Boolean);
-
-      const insights = [...blobInsights, ...legacyInsights];
       const analyzedByLabel = transcripts.filter(t => (t.labels || []).includes(ANALYZED_LABEL)).length;
+
+      const insights = insightPages
+        .map(p => {
+          const parsed = extractInsightJson(p.body?.storage?.value);
+          if (!parsed) return null;
+          return { ...parsed, _createdAt: p.history?.createdDate || null };
+        })
+        .filter(Boolean);
 
       const total = insights.length;
       const sentimentCounts = { positive: 0, neutral: 0, at_risk: 0, negative: 0 };
@@ -244,9 +191,7 @@ export default async function handler(req, res) {
       return res.status(200).json({
         total_transcripts: transcripts.length,
         total_analyzed_by_label: analyzedByLabel,
-        total_insight_pages_found: blobInsights.length + legacyInsights.length,
-        total_blob_insights: blobInsights.length,
-        total_legacy_insights: legacyInsights.length,
+        total_insight_pages_found: insightPages.length,
         total_analyzed: total,
         avg_sentiment_score: sentimentScoreCount > 0 ? sentimentScoreSum / sentimentScoreCount : 0,
         sentiment_distribution: sentimentCounts,
@@ -267,71 +212,50 @@ export default async function handler(req, res) {
 
     // ===== LIST transcripts (with pagination) =====
     const limit = Math.min(parseInt(url.searchParams.get('limit') || '50', 10), 100);
-    let pages, blobRefs;
-    try {
-      [pages, blobRefs] = await Promise.all([
-        listChildPages(transcriptsParentId(), { limit }),
-        listInsights().catch(() => [])
-      ]);
-    } catch (e) { return res.status(502).json({ error: 'confluence_failed', detail: e.message }); }
-
-    // Set of pageIds that have Blob insights (fast lookup)
-    const blobPageIds = new Set(blobRefs.map(b => b.pageId));
-
-    // We also want to expose sentiment from the Blob — fetch the small header of each
-    // insight for the currently-listed transcripts. Do it lazily to avoid N fetches when
-    // the list is big: only fetch for the pages returned in this batch AND that have a blob.
-    const needFetch = pages.filter(p => blobPageIds.has(p.page_id));
-    const blobById = new Map();
-    if (needFetch.length > 0) {
-      const urls = needFetch.map(p => blobRefs.find(b => b.pageId === p.page_id).url);
-      const payloads = await fetchInsightBatch(urls);
-      needFetch.forEach((p, i) => { if (payloads[i]) blobById.set(p.page_id, payloads[i]); });
-    }
+    let pages;
+    try { pages = await listChildPages(transcriptsParentId(), { limit }); }
+    catch (e) { return res.status(502).json({ error: 'confluence_failed', detail: e.message }); }
 
     return res.status(200).json({
       count: pages.length,
       results: pages.map(p => {
         const labels = p.labels || [];
-        const legacyAnalyzed = labels.includes('claude-analyzed'); // Roosevelt-style
-        const blobInsight = blobById.get(p.page_id) || null;
-        const has_insight = !!blobInsight || legacyAnalyzed;
-        // Prefer Blob sentiment (fresh); fall back to Confluence label (Roosevelt)
+        const has_insight = labels.includes('claude-analyzed');
         const sentimentLabel = labels.find(l => l.startsWith('sentiment-'));
-        const legacySentiment = sentimentLabel ? sentimentLabel.replace(/^sentiment-/, '').replace(/-/g, '_') : null;
-        const sentiment = blobInsight?.sentiment || legacySentiment || null;
+        const sentiment = sentimentLabel ? sentimentLabel.replace(/^sentiment-/, '').replace(/-/g, '_') : null;
         return {
           page_id: p.page_id, title: p.title, created_date: p.created_date,
-          last_modified: p.last_modified, url: p.url, labels, has_insight, sentiment,
-          _source: blobInsight ? 'blob' : (legacyAnalyzed ? 'confluence-legacy' : null)
+          last_modified: p.last_modified, url: p.url, labels, has_insight, sentiment
         };
       })
     });
   }
 
-  // POST → analyze a transcript (Blob storage)
+  // POST → analyze a transcript, cache in Confluence
   if (req.method === 'POST') {
     let body = req.body;
     if (typeof body === 'string') { try { body = JSON.parse(body); } catch { body = {}; } }
     const { confluence_page_id, force = false } = body || {};
     if (!confluence_page_id) return res.status(400).json({ error: 'confluence_page_id is required' });
 
-    // Cache check — Blob first, then Confluence legacy (Roosevelt-style)
+    // Cache check — Confluence child (new "Claude Insights - <id>" or legacy "Claude Insights")
+    let existing = null;
     if (!force) {
-      try {
-        const blob = await getInsight(confluence_page_id);
-        if (blob) return res.status(200).json({ ...blob, _cached: true, _source: 'blob' });
-      } catch (e) { /* Blob lookup failed, fall through */ }
-      try {
-        const existing = await findInsightChildPage(confluence_page_id);
-        if (existing) {
-          const cached = extractInsightJson(existing.body?.storage?.value);
-          if (cached) return res.status(200).json({ ...cached, _cached: true, _source: 'confluence-legacy' });
+      try { existing = await findInsightChildPage(confluence_page_id); } catch {}
+      if (existing) {
+        const cached = extractInsightJson(existing.body?.storage?.value);
+        if (cached) {
+          try {
+            const labels = [ANALYZED_LABEL];
+            if (cached.sentiment) labels.push(`sentiment-${cached.sentiment.replace(/_/g, '-')}`);
+            await addLabels(confluence_page_id, labels);
+          } catch {}
+          return res.status(200).json({ ...cached, _cached: true });
         }
-      } catch (e) { /* Confluence lookup failed, fall through to fresh analyze */ }
+      }
     }
 
-    // Fetch transcript body from Confluence + analyze with Claude
+    // Fetch + analyze
     let page;
     try { page = await fetchPage(confluence_page_id); }
     catch (e) { return res.status(502).json({ error: 'confluence_fetch_failed', detail: e.message }); }
@@ -349,13 +273,27 @@ export default async function handler(req, res) {
       analyzed_at: new Date().toISOString(), analyzed_by: user.email, ...insight
     };
 
-    // Save to Vercel Blob (idempotent — allowOverwrite: true handles force re-analyze)
+    // Save: try create first (new unique title). If duplicate (page already exists under this
+    // parent), refetch + update. This makes save idempotent even if cache-check missed.
     try {
-      await saveInsight(confluence_page_id, full);
-      full._source = 'blob';
-    } catch (e) {
-      full._save_error = `Blob save failed: ${e.message}`;
-    }
+      if (existing && force) {
+        await updateInsightChildPage(existing.id, existing.version?.number || 1, full, existing.title);
+      } else {
+        try {
+          await createInsightChildPage(confluence_page_id, full);
+        } catch (createErr) {
+          const isDuplicate = /already exists|A page with this title|same TITLE/i.test(createErr.message || '');
+          if (!isDuplicate) throw createErr;
+          const recovered = await findInsightChildPage(confluence_page_id);
+          if (!recovered) throw createErr;
+          await updateInsightChildPage(recovered.id, recovered.version?.number || 1, full, recovered.title);
+          full._recovered_from_duplicate = true;
+        }
+      }
+      const labels = [ANALYZED_LABEL];
+      if (insight.sentiment) labels.push(`sentiment-${insight.sentiment.replace(/_/g, '-')}`);
+      await addLabels(confluence_page_id, labels);
+    } catch (e) { full._save_error = e.message; }
     return res.status(200).json({ ...full, _cached: false });
   }
 
