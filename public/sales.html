@@ -77,6 +77,18 @@
 </style>
 <!-- Glassmorphism design system overlay (loads last, wins cascade) -->
 <link rel="stylesheet" href="/design.css" />
+<!-- Inter for the DegreeSight dossier brand -->
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;800&display=swap" />
+<style>
+  /* Dossier print: only the dossier pages, Letter format, clean */
+  @media print {
+    body.printing-dossier * { visibility: hidden !important; }
+    body.printing-dossier #dossier-pages, body.printing-dossier #dossier-pages * { visibility: visible !important; }
+    body.printing-dossier #dossier-pages { position: absolute; left: 0; top: 0; width: 100%; }
+    body.printing-dossier .dossier-page { box-shadow: none !important; border-radius: 0 !important; max-width: none !important; margin: 0 !important; page-break-after: always; }
+    @page { size: Letter; margin: 0; }
+  }
+</style>
 
 <!-- Vercel Web Analytics + Speed Insights (enable both in Vercel project settings) -->
 <script>window.va = window.va || function () { (window.vaq = window.vaq || []).push(arguments); };</script>
@@ -119,10 +131,11 @@
   <!-- LOG ACTIVITY MODAL -->
   <div id="log-modal-bg" class="modal-bg" style="display:none;position:fixed;inset:0;z-index:9999;align-items:center;justify-content:center;">
     <div class="modal" style="width:min(560px,92vw);max-height:90vh;overflow:auto;padding:24px 26px;">
-      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;">
         <div style="font-family:'Poppins',sans-serif;font-weight:600;font-size:18px;color:var(--ds-primary-3);">Log activity to HubSpot</div>
         <button id="log-close" style="background:transparent;border:none;font-size:22px;cursor:pointer;color:var(--ds-muted);">✕</button>
       </div>
+      <div id="log-owner-hint" style="font-size:12px;color:var(--ds-muted);margin-bottom:14px;"></div>
 
       <div style="display:flex;gap:4px;padding:4px;background:rgba(21,101,192,.08);border-radius:999px;width:fit-content;margin-bottom:14px;">
         <button class="log-tab active" data-log-tab="email" style="padding:7px 16px;font-size:12px;font-weight:600;border-radius:999px;border:none;cursor:pointer;background:#fff;color:var(--ds-primary-3);">📧 Email</button>
@@ -210,6 +223,7 @@
     <div class="tab" data-tab="leads">Leads</div>
     <div class="tab" data-tab="signals">Signals</div>
     <div class="tab" data-tab="buyer-intel">Buyer intel</div>
+    <div class="tab" data-tab="dossier">Dossier</div>
     <div class="tab" data-tab="conversations">Conversations</div>
     <div class="tab" data-tab="meeting-intel">Meeting intel</div>
     <div class="tab" data-tab="goals">My goals</div>
@@ -601,6 +615,25 @@
           <div id="bi-hottest"></div>
         </div>
       </div>
+    </div>
+
+    <!-- DOSSIER BUILDER -->
+    <div data-panel="dossier" style="display:none">
+      <div class="panel" style="margin-bottom:14px">
+        <div class="panel-title">📑 Account Dossier builder</div>
+        <div class="panel-sub">Search a school, build a DegreeSight-branded 2-page dossier (Starbridge + HubSpot + Claude). Print to PDF when done.</div>
+        <div style="display:flex;gap:10px;margin-top:12px;flex-wrap:wrap;align-items:center;">
+          <div style="position:relative;flex:1;min-width:280px;">
+            <input type="text" id="do-search" placeholder="Search school… (e.g. Shepherd University)" autocomplete="off" style="width:100%;" />
+            <div id="do-results" style="display:none;position:absolute;top:100%;left:0;right:0;z-index:50;background:#fff;border-radius:10px;box-shadow:0 12px 30px rgba(0,0,0,.15);max-height:260px;overflow:auto;"></div>
+          </div>
+          <button id="do-build" class="cta" style="padding:9px 22px;" disabled>⚡ Build dossier</button>
+          <button id="do-print" style="display:none;background:rgba(255,255,255,.5);border:1px solid rgba(21,101,192,.3);color:var(--ds-primary);padding:9px 18px;border-radius:999px;font-weight:600;cursor:pointer;">🖨 Print / Save PDF</button>
+        </div>
+        <div id="do-status" style="margin-top:10px;font-size:12.5px;color:var(--ds-muted);"></div>
+      </div>
+      <div id="do-skip-banner" style="display:none;margin-bottom:14px;"></div>
+      <div id="dossier-render"></div>
     </div>
 
     <!-- GOALS -->
@@ -1398,7 +1431,13 @@
         document.getElementById('modal-body').innerHTML = '<div style="color:#888780">No emails in thread</div>';
         return;
       }
-      document.getElementById('modal-body').innerHTML = emails.map(e => {
+      // Figure out reply target: prefer the counterparty of the most recent email
+      const lastEmail = emails[emails.length - 1];
+      const replyTo = lastEmail?.is_incoming ? (lastEmail.from || '') : (lastEmail?.to || '');
+      const replySubject = (emails[0]?.subject || '').replace(/^(Re:\s*)+/i, '');
+      window._currentThreadReply = { to: replyTo, subject: replySubject };
+
+      const threadHtml = emails.map(e => {
         const sideColor = e.is_incoming ? '#1D9E75' : '#2D58A8';
         const sideLabel = e.is_incoming ? '↩ Reply' : '→ Sent';
         const body = e.text || (e.html ? e.html.replace(/<[^>]+>/g, '') : '(no body)');
@@ -1410,11 +1449,65 @@
           <div style="font-size:13px;color:#1A1A1A;white-space:pre-wrap;line-height:1.5;max-height:300px;overflow-y:auto">${escapeHtml(body.slice(0, 5000))}${body.length > 5000 ? '…' : ''}</div>
         </div>`;
       }).join('');
+
+      // Reply composer at the top of the modal
+      const composerHtml = `
+        <div id="thread-reply-box" style="border:1px solid rgba(21,101,192,.25);border-radius:12px;padding:14px 16px;margin-bottom:16px;background:rgba(21,101,192,.03);">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
+            <strong style="font-size:13px;color:var(--ds-primary-3);">↩ Reply to ${escapeHtml(replyTo || '(no recipient found)')}</strong>
+            <span style="font-size:11px;color:var(--ds-muted);">Re: ${escapeHtml(replySubject.slice(0, 50))}</span>
+          </div>
+          <textarea id="thread-reply-body" rows="4" placeholder="Write your reply…" style="width:100%;resize:vertical;font-size:13px;"></textarea>
+          <div style="display:flex;gap:8px;margin-top:10px;align-items:center;flex-wrap:wrap;">
+            <button onclick="sendThreadReply()" class="cta" style="padding:7px 18px;font-size:12px;">📤 Open in email client + log</button>
+            <label style="font-size:11.5px;color:var(--ds-muted);display:flex;align-items:center;gap:5px;cursor:pointer;">
+              <input type="checkbox" id="thread-reply-log" checked style="width:auto;" /> Log to HubSpot
+            </label>
+            <span id="thread-reply-status" style="font-size:11.5px;color:var(--ds-muted);"></span>
+          </div>
+          <div style="font-size:10.5px;color:var(--ds-hint);margin-top:6px;">Opens your default email app (Gmail/Outlook) with everything pre-filled. Hit send there. The HubSpot log records it on the contact.</div>
+        </div>`;
+
+      document.getElementById('modal-body').innerHTML = composerHtml + threadHtml;
     } catch (e) {
       document.getElementById('modal-body').innerHTML = `<div style="color:#791F1F">Error: ${e.message}</div>`;
     }
   }
   window.openEmailThread = openEmailThread;
+
+  window.sendThreadReply = async function() {
+    const info = window._currentThreadReply || {};
+    const body = document.getElementById('thread-reply-body')?.value.trim();
+    const doLog = document.getElementById('thread-reply-log')?.checked;
+    const status = document.getElementById('thread-reply-status');
+    if (!info.to) { status.textContent = 'No recipient email found in thread'; return; }
+    if (!body) { status.textContent = 'Write something first'; return; }
+
+    // 1. Open the rep's email client with everything pre-filled
+    const mailto = `mailto:${encodeURIComponent(info.to)}?subject=${encodeURIComponent('Re: ' + info.subject)}&body=${encodeURIComponent(body)}`;
+    window.open(mailto, '_blank');
+
+    // 2. Log to HubSpot (optional, via the same log_email endpoint the Log activity modal uses)
+    if (doLog) {
+      status.textContent = 'Logging to HubSpot…';
+      try {
+        const ownerParam = salesData?.rep?.ownerId ? `&ownerId=${salesData.rep.ownerId}` : '';
+        const r = await fetch(`/api/sales-data?action=log_email${ownerParam}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ to: info.to, subject: 'Re: ' + info.subject, body })
+        });
+        const j = await r.json();
+        if (!r.ok) throw new Error(j.error || `HTTP ${r.status}`);
+        status.innerHTML = '<span style="color:#0A7D68;">✓ Logged to HubSpot</span>';
+        if (window.trackEvent) window.trackEvent('email_reply_logged', {});
+      } catch (e) {
+        status.innerHTML = `<span style="color:var(--ds-red);">Log failed: ${escapeHtml(e.message)}</span>`;
+      }
+    } else {
+      status.textContent = 'Opened in email client (not logged)';
+    }
+  };
 
   // -------- LEADS TAB --------
   let leadsCache = null;
@@ -1847,10 +1940,15 @@
     if (!trAllCache) {
       try {
         const r = await fetch(`/api/transcripts?limit=100`);
-        if (!r.ok) throw new Error(r.status);
-        trAllCache = await r.json();
+        const j = await r.json().catch(() => ({}));
+        if (!r.ok) {
+          const msg = j.error || `HTTP ${r.status}`;
+          const detail = j.detail ? ` — ${j.detail}` : '';
+          throw new Error(msg + detail);
+        }
+        trAllCache = j;
       } catch (e) {
-        target.innerHTML = `<div style="color:#791F1F">Error: ${e.message}</div>`;
+        target.innerHTML = `<div style="color:#791F1F;font-size:12.5px;white-space:pre-wrap;">Error: ${e.message}</div>`;
         return;
       }
     }
@@ -2020,6 +2118,205 @@
   }
   window.bulkAnalyzePending = bulkAnalyzePending;
 
+  // ==================== DOSSIER BUILDER ====================
+  let doSelectedBuyer = null;
+  let doSearchTimer = null;
+  const DS_LOGO_URL = 'https://2675906.fs1.hubspotusercontent-na1.net/hubfs/2675906/Ed%20Awards/DegreeSight.png';
+
+  async function doSearchBuyers(q) {
+    const box = document.getElementById('do-results');
+    if (!q || q.length < 2) { box.style.display = 'none'; return; }
+    try {
+      const r = await fetch(`/api/starbridge?action=search&q=${encodeURIComponent(q)}&limit=8`);
+      const d = await r.json();
+      const buyers = d.result || d.results || d.buyers || [];
+      if (!buyers.length) { box.innerHTML = '<div style="padding:10px 14px;color:var(--ds-muted);font-size:12px;">No schools found</div>'; box.style.display = 'block'; return; }
+      box.innerHTML = buyers.map(b => {
+        const name = b.name || b.buyerName || '?';
+        const state = b.stateCode || b.state || '';
+        const id = b.id || b.buyerId;
+        return `<div class="do-result-row" data-id="${id}" data-name="${escapeHtml(name)}" style="padding:10px 14px;cursor:pointer;border-bottom:1px solid rgba(0,0,0,.05);font-size:13px;">
+          <strong>${escapeHtml(name)}</strong> ${state ? `<span style="color:var(--ds-muted);font-size:11px;">· ${state}</span>` : ''}
+        </div>`;
+      }).join('');
+      box.style.display = 'block';
+      box.querySelectorAll('.do-result-row').forEach(row => {
+        row.addEventListener('click', () => {
+          doSelectedBuyer = { id: row.dataset.id, name: row.dataset.name };
+          document.getElementById('do-search').value = row.dataset.name;
+          box.style.display = 'none';
+          document.getElementById('do-build').disabled = false;
+        });
+      });
+    } catch { box.style.display = 'none'; }
+  }
+
+  async function buildDossier() {
+    if (!doSelectedBuyer) return;
+    const btn = document.getElementById('do-build');
+    const status = document.getElementById('do-status');
+    btn.disabled = true; btn.textContent = 'Building…';
+    status.textContent = 'Pulling Starbridge + HubSpot + Claude synthesis (20-40s)…';
+    document.getElementById('dossier-render').innerHTML = '';
+    document.getElementById('do-print').style.display = 'none';
+    document.getElementById('do-skip-banner').style.display = 'none';
+    try {
+      const r = await fetch(`/api/starbridge?action=dossier&buyerId=${encodeURIComponent(doSelectedBuyer.id)}&buyerName=${encodeURIComponent(doSelectedBuyer.name)}`);
+      const d = await r.json();
+      if (!r.ok) throw new Error(d.error || d.detail || `HTTP ${r.status}`);
+      if (d.claude_error) throw new Error('Claude synthesis failed: ' + d.claude_error);
+      if (d.skip_recommended) {
+        document.getElementById('do-skip-banner').innerHTML = `
+          <div style="background:rgba(13,168,140,.10);border:1px solid rgba(13,168,140,.3);border-radius:12px;padding:12px 16px;">
+            <strong style="color:#0A7D68;">✅ ${escapeHtml(d.skip_reason || 'Company already closed-won')}</strong>
+            <div style="font-size:12px;color:var(--ds-muted);margin-top:3px;">Weekly-run rules say skip this account. Dossier rendered below anyway for reference.</div>
+          </div>`;
+        document.getElementById('do-skip-banner').style.display = 'block';
+      }
+      renderDossier(d);
+      document.getElementById('do-print').style.display = '';
+      const srcBits = [];
+      if (d._sources?.starbridge_summary) srcBits.push('Starbridge ✓');
+      if (d._sources?.hubspot_company) srcBits.push('HubSpot ✓'); else srcBits.push('HubSpot: no company record');
+      srcBits.push(`${d._sources?.signals_count ?? 0} signals`);
+      status.textContent = `Built for ${d.prepared_for || 'unassigned'} · ${srcBits.join(' · ')}`;
+      if (window.trackEvent) window.trackEvent('dossier_built', { school: doSelectedBuyer.name });
+    } catch (e) {
+      status.innerHTML = `<span style="color:var(--ds-red);">❌ ${escapeHtml(e.message)}</span>`;
+    } finally {
+      btn.disabled = false; btn.textContent = '⚡ Build dossier';
+    }
+  }
+
+  function renderDossier(d) {
+    const doc = d.dossier || {};
+    const initials = (d.school_name || '?').split(/\s+/).slice(0, 2).map(w => w[0]).join('').toUpperCase();
+    const repName = salesData?.rep?.name || '';
+    const themeColors = { hot: '#C0472E', warm: '#B4700F', neutral: '#12305B' };
+    const bannerBg = { hot: '#FDF0EC', warm: '#FDF6E8', neutral: '#EEF2F9' };
+    const theme = doc.theme || 'neutral';
+
+    const stat = (s) => `
+      <div style="flex:1;min-width:110px;background:#fff;border:1px solid #E3E8F0;border-radius:10px;padding:12px 14px;">
+        <div style="font:700 26px/1 Inter,sans-serif;color:${s.warn ? '#C0472E' : '#0A1F3C'};">${s.n || ''}</div>
+        <div style="font-size:10.5px;color:#5B6B82;margin-top:4px;line-height:1.35;">${s.l || ''}</div>
+      </div>`;
+    const stackRow = (r) => `
+      <div style="display:flex;justify-content:space-between;padding:8px 12px;border-top:1px solid #E9EDF3;font-size:12px;">
+        <span style="color:#42526B;">${escapeHtml(r.label || '')}</span>
+        <b style="color:${r.ok ? '#0A7D68' : '#0A1F3C'};">${escapeHtml(r.value || '')}</b>
+      </div>`;
+    const person = (p) => {
+      const badgeColors = { owner: 'background:#E5F5F2;color:#0A7D68;', stale: 'background:#FDF0EC;color:#C0472E;', neutral: 'background:#EEF2F9;color:#12305B;' };
+      return `
+      <div style="background:#fff;border:1px solid #E3E8F0;border-radius:10px;padding:14px 16px;margin-bottom:8px;">
+        <div style="display:flex;justify-content:space-between;align-items:center;">
+          <b style="font-size:14px;color:#0A1F3C;">${escapeHtml(p.name || '')}</b>
+          <span style="font-size:9px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;padding:3px 9px;border-radius:999px;${badgeColors[p.badge_type] || badgeColors.neutral}">${escapeHtml(p.badge || '')}</span>
+        </div>
+        <div style="font-size:11.5px;color:#42526B;margin-top:2px;">${escapeHtml(p.role || '')}</div>
+        <div style="font-size:11.5px;color:#5B6B82;margin-top:6px;line-height:1.45;">${p.note || ''}</div>
+        ${p.contact ? `<div style="font-size:11px;color:#1034E5;margin-top:6px;">${escapeHtml(p.contact)}</div>` : ''}
+      </div>`;
+    };
+    const chip = (c) => `<span style="display:inline-block;background:rgba(255,255,255,.12);border:1px solid rgba(255,255,255,.25);border-radius:999px;padding:4px 12px;font-size:10px;color:#fff;margin:3px 4px 3px 0;"><b>${escapeHtml(c.src || '')}</b> · ${escapeHtml(c.detail || '')}</span>`;
+    const watchRow = (w, i) => `
+      <div style="display:flex;gap:12px;background:#FDF6E8;border-radius:10px;padding:12px 14px;margin-bottom:8px;align-items:flex-start;">
+        <div style="width:22px;height:22px;border-radius:50%;background:#B4700F;color:#fff;font:700 11px/22px Inter,sans-serif;text-align:center;flex:none;">${i + 1}</div>
+        <div style="font-size:12px;color:#42526B;line-height:1.5;">${w}</div>
+      </div>`;
+    const secTitle = (t) => `<div style="display:flex;align-items:center;gap:8px;margin:18px 0 10px;"><div style="width:18px;height:2px;background:#15B4A6;"></div><div style="font:700 11px Inter,sans-serif;letter-spacing:.14em;text-transform:uppercase;color:#0A7D68;">${t}</div></div>`;
+
+    document.getElementById('dossier-render').innerHTML = `
+    <div id="dossier-pages" style="font-family:Inter,-apple-system,sans-serif;">
+      <!-- PAGE 1 -->
+      <div class="dossier-page" style="background:#fff;max-width:850px;margin:0 auto 20px;border-radius:14px;box-shadow:0 10px 40px rgba(10,31,60,.12);overflow:hidden;">
+        <div style="background:#0A1F3C;padding:22px 30px;display:flex;justify-content:space-between;align-items:center;">
+          <img src="${DS_LOGO_URL}" alt="DegreeSight" style="height:34px;filter:brightness(0) invert(1);" onerror="this.replaceWith(Object.assign(document.createElement('b'),{textContent:'DEGREESIGHT',style:'color:#fff;font-size:18px;letter-spacing:.06em;'}))" />
+          <div style="text-align:right;">
+            <div style="font-size:9px;letter-spacing:.22em;color:#15B4A6;font-weight:700;">GO-TO-MARKET INTELLIGENCE</div>
+            <div style="font:700 19px Inter,sans-serif;color:#fff;">Account Dossier</div>
+            <span style="display:inline-block;margin-top:5px;border:1px solid #15B4A6;color:#15B4A6;border-radius:999px;font-size:9px;font-weight:700;letter-spacing:.14em;padding:3px 12px;">${escapeHtml((doc.tag || 'ACCOUNT REVIEW').toUpperCase())}</span>
+          </div>
+        </div>
+        <div style="padding:14px 30px;border-bottom:1px solid #E9EDF3;font-size:11px;color:#5B6B82;">
+          Prepared by <b style="color:#0A1F3C;">${escapeHtml(repName)}</b>
+          &nbsp;&nbsp;For <b style="color:#0A1F3C;">${escapeHtml(d.prepared_for || repName)}</b>
+          &nbsp;&nbsp;Compiled <b style="color:#0A1F3C;">${escapeHtml(d.compiled_date || '')}</b>
+        </div>
+        <div style="padding:20px 30px 6px;display:flex;gap:16px;align-items:center;">
+          <div style="width:54px;height:54px;border:1px solid #E3E8F0;border-radius:12px;display:grid;place-items:center;font:700 18px Inter,sans-serif;color:#12305B;flex:none;">${initials}</div>
+          <div>
+            <div style="font:700 26px Inter,sans-serif;color:#0A1F3C;">${escapeHtml(d.school_name || '')}</div>
+            <div style="font-size:12px;color:#5B6B82;margin-top:2px;">${doc.context_line || ''}</div>
+          </div>
+        </div>
+        <div style="margin:16px 30px;background:${bannerBg[theme]};border:1px solid ${themeColors[theme]}33;border-radius:12px;padding:14px 18px;display:flex;gap:14px;align-items:flex-start;">
+          <span style="background:${themeColors[theme]};color:#fff;font:700 9px Inter,sans-serif;letter-spacing:.1em;border-radius:999px;padding:4px 12px;white-space:nowrap;flex:none;margin-top:2px;">${escapeHtml((doc.banner_label || 'WHY IT MATTERS').toUpperCase())}</span>
+          <div style="font-size:12px;color:#42526B;line-height:1.55;">${doc.banner_text || ''}</div>
+        </div>
+        <div style="padding:0 30px;">
+          ${secTitle('Read this first')}
+          <div style="border-left:3px solid #15B4A6;background:#F7FAF9;border-radius:0 10px 10px 0;padding:14px 18px;">
+            <div style="font:700 10px Inter,sans-serif;letter-spacing:.12em;color:#0A7D68;margin-bottom:8px;">THREE THINGS THAT DECIDE THIS ACCOUNT</div>
+            <ol style="margin:0;padding-left:18px;font-size:12px;color:#42526B;line-height:1.55;">${(doc.tldr || []).map(t => `<li style="margin-bottom:6px;">${t}</li>`).join('')}</ol>
+          </div>
+          ${secTitle('The numbers')}
+          <div style="display:flex;gap:10px;flex-wrap:wrap;">${(doc.stats || []).map(stat).join('')}</div>
+          ${secTitle('Tech stack & what matters')}
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;">
+            <div style="border:1px solid #E3E8F0;border-radius:10px;overflow:hidden;">
+              <div style="background:#0A1F3C;color:#fff;font:700 10px Inter,sans-serif;letter-spacing:.1em;padding:8px 12px;">SYSTEMS ON FILE</div>
+              ${(doc.stack || []).map(stackRow).join('')}
+            </div>
+            <div style="font-size:12px;color:#42526B;line-height:1.55;">${doc.stack_matters || ''}</div>
+          </div>
+          ${secTitle('Who is on file')}
+          ${(doc.people || []).length ? (doc.people || []).map(person).join('') : '<div style="font-size:12px;color:#5B6B82;">No contacts on file in HubSpot. Candidly, sourcing an enrollment or registrar contact is step one.</div>'}
+        </div>
+        <div style="background:#0A1F3C;margin-top:18px;padding:16px 30px 20px;">
+          <div style="font:700 10px Inter,sans-serif;letter-spacing:.14em;color:#15B4A6;margin-bottom:8px;">HOW THIS DOSSIER WAS ASSEMBLED</div>
+          <div>${(doc.provenance_chips || []).map(chip).join('')}</div>
+          <div style="font-size:11px;color:rgba(255,255,255,.85);line-height:1.55;margin-top:8px;">${doc.provenance_point || ''}</div>
+        </div>
+      </div>
+
+      <!-- PAGE 2 -->
+      <div class="dossier-page" style="background:#fff;max-width:850px;margin:0 auto;border-radius:14px;box-shadow:0 10px 40px rgba(10,31,60,.12);overflow:hidden;padding:8px 30px 22px;">
+        ${secTitle('Why they would want DegreeSight')}
+        <ul style="list-style:none;margin:0;padding:0;">${(doc.fit || []).map(f => `<li style="display:flex;gap:10px;font-size:12px;color:#42526B;line-height:1.55;margin-bottom:8px;"><span style="width:8px;height:8px;border-radius:50%;background:#15B4A6;flex:none;margin-top:5px;"></span><span>${f}</span></li>`).join('')}</ul>
+        ${secTitle('Watch for')}
+        ${(doc.watch || []).map(watchRow).join('')}
+        ${secTitle('Bring to the first call')}
+        <ul style="margin:0;padding-left:18px;font-size:12px;color:#42526B;line-height:1.6;">${(doc.bring || []).map(b => `<li style="margin-bottom:6px;">${b}</li>`).join('')}</ul>
+        <div style="background:#0A1F3C;border-radius:12px;padding:20px 24px;margin-top:18px;">
+          <div style="font-size:14px;line-height:1.6;color:#fff;"><b style="color:#15B4A6;">${escapeHtml(doc.pull_highlight || '')}</b> ${doc.pull_body || ''}</div>
+          <div style="font-size:10px;color:rgba(255,255,255,.55);margin-top:10px;">Strategic framing · ${escapeHtml(d.school_name || '')} dossier</div>
+        </div>
+        <div style="display:flex;justify-content:space-between;border-top:1px solid #E9EDF3;margin-top:16px;padding-top:10px;font-size:10px;color:#5B6B82;">
+          <span>${doc.sources_footer || 'Sources: Starbridge, HubSpot.'}</span>
+          <span><b style="color:#0A1F3C;">DegreeSight</b> · Rep-built dossier</span>
+        </div>
+      </div>
+    </div>`;
+  }
+
+  function printDossier() {
+    // Print only the dossier: clone into a print-dedicated container
+    document.body.classList.add('printing-dossier');
+    window.print();
+    setTimeout(() => document.body.classList.remove('printing-dossier'), 500);
+  }
+
+  document.getElementById('do-search')?.addEventListener('input', (e) => {
+    doSelectedBuyer = null;
+    document.getElementById('do-build').disabled = true;
+    clearTimeout(doSearchTimer);
+    doSearchTimer = setTimeout(() => doSearchBuyers(e.target.value.trim()), 350);
+  });
+  document.getElementById('do-build')?.addEventListener('click', buildDossier);
+  document.getElementById('do-print')?.addEventListener('click', printDossier);
+
   // ---------- LOG ACTIVITY MODAL ----------
   let logSelectedContact = null;
   let logActiveTab = 'email';
@@ -2031,6 +2328,12 @@
     const now = new Date();
     now.setMinutes(now.getMinutes() - now.getTimezoneOffset());
     document.getElementById('log-meeting-start').value = now.toISOString().slice(0, 16);
+    // Show which rep this activity will be attributed to (esp. important for admins with rep dropdown)
+    const hint = document.getElementById('log-owner-hint');
+    if (hint) {
+      const repName = salesData?.rep?.name || 'you';
+      hint.innerHTML = `Will be logged as <strong style="color:var(--ds-primary);">${repName}</strong> in HubSpot`;
+    }
   }
   function closeLogModal() {
     document.getElementById('log-modal-bg').style.display = 'none';
@@ -2116,7 +2419,9 @@
       if (!payload.body) { status.textContent = 'Note body required'; btn.disabled = false; return; }
     }
     try {
-      const r = await fetch(`/api/sales-data?action=log_${logActiveTab}`, {
+      // Pass the currently-selected rep so admin/manager logs attribute to the right owner
+      const selOwner = salesData?.rep?.ownerId ? `&ownerId=${salesData.rep.ownerId}` : '';
+      const r = await fetch(`/api/sales-data?action=log_${logActiveTab}${selOwner}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload)
