@@ -272,6 +272,172 @@ export default async function handler(req, res) {
       });
     }
 
+    // ===== WEEKLY: weekly dossier batch + per-rep digests (saved to Confluence) =====
+    if (action === 'weekly') {
+      const sub = url.searchParams.get('sub') || 'plan';
+      // Reps in the weekly loop. Cody intentionally excluded (routing rules: his
+      // net-new accounts flow to Charles).
+      const WEEKLY_REPS = [
+        { name: 'Jay Fedje',      ownerId: '118972528' },
+        { name: 'Michael Cronin', ownerId: '84179396' },
+        { name: 'Charles Ramos',  ownerId: '90988586' },
+        { name: 'Drew Melendres', ownerId: '30458491' }
+      ];
+      const now = new Date();
+      const wk = (() => { const d = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate())); d.setUTCDate(d.getUTCDate() - ((d.getUTCDay() + 6) % 7)); return d.toISOString().slice(0, 10); })();
+      const week = url.searchParams.get('week') || wk;
+      const PAGE_TITLE = w => `Weekly Dossiers - ${w}`;
+      const { upsertJsonPage, listPagesByTitlePrefix, findPageByExactTitle, extractInsightJson, transcriptsParentId, pageUrl } =
+        await import('../lib/confluence.js');
+      const parentId = process.env.CONFLUENCE_WEEKLY_PARENT_ID || transcriptsParentId();
+
+      // --- plan: pick this week's top 25 targets, weighted toward STRONG intent ---
+      // Strong intent = RFP / Purchase / Meeting signals (score 3x); general
+      // hotness signals score 1x. Top 25 buyers by total intent score.
+      if (sub === 'plan') {
+        const STRONG_TYPES = new Set(['RFP', 'Purchase', 'Meeting']);
+        const [hot, rfp, purchase, meeting] = await Promise.all([
+          listTopRecentSignals({ pageSize: 100, sort: 'Hotness', relativeDatePeriodFrom: 'LastSevenDays' }),
+          listTopRecentSignals({ pageSize: 50, filterType: ['RFP'],      relativeDatePeriodFrom: 'LastSevenDays' }).catch(() => ({ result: [] })),
+          listTopRecentSignals({ pageSize: 50, filterType: ['Purchase'], relativeDatePeriodFrom: 'LastSevenDays' }).catch(() => ({ result: [] })),
+          listTopRecentSignals({ pageSize: 50, filterType: ['Meeting'],  relativeDatePeriodFrom: 'LastSevenDays' }).catch(() => ({ result: [] }))
+        ]);
+        const all = [...(hot.result || []), ...(rfp.result || []), ...(purchase.result || []), ...(meeting.result || [])];
+        const byBuyer = {};
+        const seenSignal = new Set(); // dedupe the same signal appearing in two fetches
+        for (const s of all) {
+          const bid = s.row?.buyerId;
+          if (!bid) continue;
+          const sigKey = `${bid}|${s.bridge?.name || ''}|${s.row?.name || ''}`;
+          if (seenSignal.has(sigKey)) continue;
+          seenSignal.add(sigKey);
+          const type = s.bridge?.filterType || null;
+          const weight = STRONG_TYPES.has(type) ? 3 : 1;
+          if (!byBuyer[bid]) byBuyer[bid] = { buyerId: bid, name: s.row?.buyerName || s.row?.name || '', signal_count: 0, intent_score: 0, strong_signals: 0, top_signal: null };
+          byBuyer[bid].signal_count++;
+          byBuyer[bid].intent_score += weight;
+          if (STRONG_TYPES.has(type)) byBuyer[bid].strong_signals++;
+          // Prefer a strong-intent signal as the headline signal
+          if (!byBuyer[bid].top_signal || (STRONG_TYPES.has(type) && !STRONG_TYPES.has(byBuyer[bid].top_signal.type))) {
+            byBuyer[bid].top_signal = { type, name: s.row?.name || null, bridge: s.bridge?.name || null };
+          }
+          if (!byBuyer[bid].name && s.row?.name) byBuyer[bid].name = s.row.name;
+        }
+        const targets = Object.values(byBuyer)
+          .sort((a, b) => b.intent_score - a.intent_score || b.signal_count - a.signal_count)
+          .slice(0, 25);
+        return res.status(200).json({ week, targets, total_signals: all.length });
+      }
+
+      // --- digests: one Claude digest per rep (minus Cody) ---
+      if (sub === 'digests') {
+        const body = req.body || {};
+        const dossierSummaries = Array.isArray(body.dossiers) ? body.dossiers : [];
+        const hsToken = process.env.HUBSPOT_TOKEN;
+        const apiKey = process.env.ANTHROPIC_API_KEY;
+        if (!apiKey) return res.status(500).json({ error: 'ANTHROPIC_API_KEY not set' });
+        const weekStartISO = `${week}T00:00:00Z`;
+        const digests = {};
+        for (const rep of WEEKLY_REPS) {
+          // Deals that moved this week for this rep
+          let movedDeals = [];
+          if (hsToken) {
+            try {
+              const dr = await hsSearch(hsToken, 'deals', {
+                filterGroups: [{ filters: [
+                  { propertyName: 'hubspot_owner_id', operator: 'EQ', value: rep.ownerId },
+                  { propertyName: 'hs_lastmodifieddate', operator: 'BETWEEN', value: weekStartISO, highValue: new Date().toISOString() }
+                ] }],
+                properties: ['dealname', 'dealstage', 'amount', 'closedate'],
+                sorts: [{ propertyName: 'amount', direction: 'DESCENDING' }], limit: 15
+              });
+              movedDeals = (dr.results || []).map(x => x.properties);
+            } catch (e) { /* digest still works without deals */ }
+          }
+          const repDossiers = dossierSummaries.filter(d2 => (d2.prepared_for || '') === rep.name);
+          const prompt = `You write a short Monday digest for a DegreeSight sales rep. Concise, direct, plain language. NO em dashes. Use "candidly" rather than "honestly". Be honest about gaps.
+
+REP: ${rep.name}
+WEEK OF: ${week}
+NEW ACCOUNT DOSSIERS PREPARED FOR THIS REP THIS WEEK: ${JSON.stringify(repDossiers)}
+THEIR DEALS WITH ACTIVITY THIS WEEK: ${JSON.stringify(movedDeals)}
+
+Return VALID JSON only:
+{
+  "headline": "≤14 words, the single most important thing for ${rep.name} this week",
+  "bullets": ["3-5 items, each ≤30 words, start with <b>bolded action or fact.</b> Reference the dossiers and deals above by name. If there is nothing for a category, say so candidly."],
+  "focus_account": "school name from the dossiers most worth their first hour, or null"
+}`;
+          try {
+            const r2 = await fetch('https://api.anthropic.com/v1/messages', {
+              method: 'POST',
+              headers: { 'x-api-key': apiKey, 'anthropic-version': '2023-06-01', 'content-type': 'application/json' },
+              body: JSON.stringify({ model: 'claude-haiku-4-5', max_tokens: 900, messages: [{ role: 'user', content: prompt }] })
+            });
+            if (!r2.ok) throw new Error(`Claude ${r2.status}`);
+            const j2 = await r2.json();
+            const txt = (j2.content?.[0]?.text || '').replace(/^```(?:json)?\s*/gim, '').replace(/\s*```\s*$/gim, '');
+            const s2 = txt.indexOf('{'), e3 = txt.lastIndexOf('}');
+            digests[rep.name] = JSON.parse(txt.slice(s2, e3 + 1).replace(/,(\s*[\}\]])/g, '$1'));
+          } catch (e) {
+            digests[rep.name] = { headline: 'Digest unavailable', bullets: [`Claude error: ${e.message}`], focus_account: null, _error: true };
+          }
+          digests[rep.name].moved_deals = movedDeals.length;
+          digests[rep.name].dossier_count = repDossiers.length;
+        }
+        return res.status(200).json({ week, digests });
+      }
+
+      // --- save: persist the full weekly bundle to Confluence ---
+      if (sub === 'save') {
+        const bundle = req.body || {};
+        if (!bundle.week) bundle.week = week;
+        bundle.saved_at = new Date().toISOString();
+        bundle.saved_by = user.email;
+        const saved = await upsertJsonPage(parentId, PAGE_TITLE(bundle.week), bundle);
+        return res.status(200).json({ ok: true, week: bundle.week, ...saved, url: pageUrl(saved.page_id) });
+      }
+
+      // --- list: saved weeks ---
+      if (sub === 'list') {
+        const pages = await listPagesByTitlePrefix(parentId, 'Weekly Dossiers - ');
+        const weeks = pages
+          .map(p => ({ week: (p.title || '').replace('Weekly Dossiers - ', ''), page_id: p.page_id, updated_at: p.updated_at }))
+          .sort((a, b) => b.week.localeCompare(a.week));
+        return res.status(200).json({ weeks });
+      }
+
+      // --- get: load one saved week ---
+      if (sub === 'get') {
+        const page = await findPageByExactTitle(parentId, PAGE_TITLE(week));
+        if (!page) return res.status(404).json({ error: `No saved bundle for week ${week}` });
+        const bodyHtml = page.body?.storage?.value || '';
+        const bundle = extractInsightJson(bodyHtml);
+        if (!bundle) return res.status(500).json({ error: 'Saved page exists but JSON could not be parsed' });
+        return res.status(200).json({ week, bundle });
+      }
+
+      // --- notify: Slack webhook to the team (reps minus Cody) ---
+      if (sub === 'notify') {
+        const hook = process.env.SLACK_WEBHOOK_URL;
+        if (!hook) return res.status(400).json({ error: 'SLACK_WEBHOOK_URL not set. Create an incoming webhook in Slack and add it as a Vercel env var.' });
+        const b = req.body || {};
+        const names = WEEKLY_REPS.map(r3 => r3.name).join(', ');
+        const dashUrl = `https://${req.headers.host}/sales.html`;
+        const text = `📂 *Weekly dossiers are ready* (week of ${b.week || week})\n` +
+          `${b.dossier_count ?? '?'} account dossier${(b.dossier_count || 0) === 1 ? '' : 's'} + personal digests for: ${names}\n` +
+          `Open the *Dossier → Weekly* tab: ${dashUrl}`;
+        const r4 = await fetch(hook, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ text })
+        });
+        if (!r4.ok) return res.status(500).json({ error: `Slack webhook ${r4.status}: ${(await r4.text()).slice(0, 200)}` });
+        return res.status(200).json({ ok: true });
+      }
+
+      return res.status(400).json({ error: `unknown weekly sub: ${sub}` });
+    }
+
     // ===== ANALYTICS: aggregate signals overview =====
     if (action === 'analytics') {
       const period = url.searchParams.get('period') || 'LastThirtyDays';
