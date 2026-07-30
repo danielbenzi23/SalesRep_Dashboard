@@ -619,6 +619,29 @@
 
     <!-- DOSSIER BUILDER -->
     <div data-panel="dossier" style="display:none">
+      <!-- Sub-toggle: single dossier builder vs weekly batch -->
+      <div style="display:flex;gap:8px;margin-bottom:14px;">
+        <button class="wk-subtab active" data-wk="builder" style="padding:7px 18px;border-radius:999px;border:1px solid rgba(21,101,192,.3);background:var(--ds-primary);color:#fff;font-weight:600;cursor:pointer;font-size:13px;">📑 Build dossier</button>
+        <button class="wk-subtab" data-wk="weekly" style="padding:7px 18px;border-radius:999px;border:1px solid rgba(21,101,192,.3);background:rgba(255,255,255,.5);color:var(--ds-primary);font-weight:600;cursor:pointer;font-size:13px;">🗓 Weekly</button>
+      </div>
+
+      <!-- WEEKLY: batch dossiers + per-rep digests -->
+      <div id="wk-panel" style="display:none;">
+        <div class="panel" style="margin-bottom:14px">
+          <div class="panel-title">🗓 Weekly Signal Dossiers</div>
+          <div class="panel-sub">Top signal accounts of the week → batch dossiers + a personal digest per rep. Saved per week; Slack notice on completion.</div>
+          <div style="display:flex;gap:10px;margin-top:12px;flex-wrap:wrap;align-items:center;">
+            <button id="wk-generate" class="cta" style="padding:9px 22px;">⚡ Generate this week</button>
+            <select id="wk-past" style="padding:8px 12px;border-radius:10px;"><option value="">Past weeks…</option></select>
+            <button id="wk-notify" style="display:none;background:rgba(255,255,255,.5);border:1px solid rgba(21,101,192,.3);color:var(--ds-primary);padding:9px 18px;border-radius:999px;font-weight:600;cursor:pointer;">📣 Send Slack notice</button>
+          </div>
+          <div id="wk-status" style="margin-top:10px;font-size:12.5px;color:var(--ds-muted);"></div>
+        </div>
+        <div id="wk-render"></div>
+      </div>
+
+      <!-- BUILDER (existing single-dossier flow) -->
+      <div id="wk-builder-panel">
       <div class="panel" style="margin-bottom:14px">
         <div class="panel-title">📑 Account Dossier builder</div>
         <div class="panel-sub">Search a school, build a DegreeSight-branded 2-page dossier (Starbridge + HubSpot + Claude). Print to PDF when done.</div>
@@ -634,6 +657,7 @@
       </div>
       <div id="do-skip-banner" style="display:none;margin-bottom:14px;"></div>
       <div id="dossier-render"></div>
+      </div><!-- /wk-builder-panel -->
     </div>
 
     <!-- GOALS -->
@@ -2189,6 +2213,12 @@
   }
 
   function renderDossier(d) {
+    document.getElementById('dossier-render').innerHTML = dossierMarkup(d);
+  }
+
+  // Returns the full 2-page dossier markup as a string (used by the on-screen
+  // view AND by the weekly PDF generator, which renders it offscreen).
+  function dossierMarkup(d) {
     const doc = d.dossier || {};
     const initials = (d.school_name || '?').split(/\s+/).slice(0, 2).map(w => w[0]).join('').toUpperCase();
     const repName = salesData?.rep?.name || '';
@@ -2227,7 +2257,7 @@
       </div>`;
     const secTitle = (t) => `<div style="display:flex;align-items:center;gap:8px;margin:18px 0 10px;"><div style="width:18px;height:2px;background:#15B4A6;"></div><div style="font:700 11px Inter,sans-serif;letter-spacing:.14em;text-transform:uppercase;color:#0A7D68;">${t}</div></div>`;
 
-    document.getElementById('dossier-render').innerHTML = `
+    return `
     <div id="dossier-pages" style="font-family:Inter,-apple-system,sans-serif;">
       <!-- PAGE 1 -->
       <div class="dossier-page" style="background:#fff;max-width:850px;margin:0 auto 20px;border-radius:14px;box-shadow:0 10px 40px rgba(10,31,60,.12);overflow:hidden;">
@@ -2316,6 +2346,240 @@
   });
   document.getElementById('do-build')?.addEventListener('click', buildDossier);
   document.getElementById('do-print')?.addEventListener('click', printDossier);
+
+  // ---------- WEEKLY DOSSIERS ----------
+  let wkBundle = null;
+
+  // Lazy-load html2canvas + jsPDF (only needed during weekly generation)
+  let pdfLibsReady = null;
+  function loadPdfLibs() {
+    if (pdfLibsReady) return pdfLibsReady;
+    const load = src => new Promise((ok, err) => {
+      const s = document.createElement('script');
+      s.src = src; s.onload = ok; s.onerror = () => err(new Error('Failed to load ' + src));
+      document.head.appendChild(s);
+    });
+    pdfLibsReady = Promise.all([
+      load('https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js'),
+      load('https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js')
+    ]);
+    return pdfLibsReady;
+  }
+
+  // Render a dossier offscreen → 2-page Letter PDF → base64 (no print dialog)
+  async function dossierToPdfBase64(d) {
+    const holder = document.createElement('div');
+    holder.style.cssText = 'position:absolute;left:-12000px;top:0;width:900px;background:#fff;';
+    holder.innerHTML = dossierMarkup(d);
+    document.body.appendChild(holder);
+    try {
+      await new Promise(r => setTimeout(r, 80)); // let images settle
+      const pages = holder.querySelectorAll('.dossier-page');
+      const { jsPDF } = window.jspdf;
+      const pdf = new jsPDF({ unit: 'pt', format: 'letter' });
+      let first = true;
+      for (const pg of pages) {
+        const canvas = await html2canvas(pg, { scale: 2, useCORS: true, backgroundColor: '#ffffff', logging: false });
+        const img = canvas.toDataURL('image/jpeg', 0.85);
+        const pw = pdf.internal.pageSize.getWidth(), ph = pdf.internal.pageSize.getHeight();
+        const ratio = canvas.height / canvas.width;
+        let w = pw, h = pw * ratio;
+        if (h > ph) { h = ph; w = ph / ratio; }
+        if (!first) pdf.addPage();
+        pdf.addImage(img, 'JPEG', (pw - w) / 2, 0, w, h);
+        first = false;
+      }
+      return pdf.output('datauristring').split(',')[1];
+    } finally { holder.remove(); }
+  }
+
+  document.querySelectorAll('.wk-subtab').forEach(b => b.addEventListener('click', () => {
+    document.querySelectorAll('.wk-subtab').forEach(x => {
+      const on = x === b;
+      x.classList.toggle('active', on);
+      x.style.background = on ? 'var(--ds-primary)' : 'rgba(255,255,255,.5)';
+      x.style.color = on ? '#fff' : 'var(--ds-primary)';
+    });
+    const weekly = b.dataset.wk === 'weekly';
+    document.getElementById('wk-panel').style.display = weekly ? 'block' : 'none';
+    document.getElementById('wk-builder-panel').style.display = weekly ? 'none' : 'block';
+    if (weekly) wkLoadPastWeeks();
+  }));
+
+  async function wkLoadPastWeeks() {
+    try {
+      const r = await fetch('/api/starbridge?action=weekly&sub=list');
+      const d = await r.json();
+      const sel = document.getElementById('wk-past');
+      sel.innerHTML = '<option value="">Past weeks…</option>' +
+        (d.weeks || []).map(w => `<option value="${w.week}">Week of ${w.week}</option>`).join('');
+    } catch {}
+  }
+
+  document.getElementById('wk-past')?.addEventListener('change', async (e) => {
+    if (!e.target.value) return;
+    const status = document.getElementById('wk-status');
+    status.textContent = 'Loading saved week…';
+    try {
+      const r = await fetch(`/api/starbridge?action=weekly&sub=get&week=${e.target.value}`);
+      const d = await r.json();
+      if (!r.ok) throw new Error(d.error || `HTTP ${r.status}`);
+      wkBundle = d.bundle;
+      wkBundle.folder_url = d.folder_url || wkBundle.folder_url;
+      wkRender(wkBundle);
+      status.innerHTML = `Week of ${d.week} · saved ${new Date(wkBundle.saved_at).toLocaleString()} by ${escapeHtml(wkBundle.saved_by || '?')}` +
+        (wkBundle.folder_url ? ` · <a href="${wkBundle.folder_url}" target="_blank" style="color:var(--ds-primary);font-weight:600;">PDFs on Drive</a>` : '');
+      document.getElementById('wk-notify').style.display = 'inline-block';
+    } catch (err) { status.innerHTML = `<span style="color:var(--ds-red);">Error: ${escapeHtml(err.message)}</span>`; }
+  });
+
+  async function wkGenerate() {
+    const btn = document.getElementById('wk-generate');
+    const status = document.getElementById('wk-status');
+    btn.disabled = true; btn.textContent = 'Generating…';
+    try {
+      // 1) Plan: top signal accounts of the week
+      status.textContent = '1/4 · Picking this week\'s top signal accounts…';
+      const pr = await fetch('/api/starbridge?action=weekly&sub=plan');
+      const plan = await pr.json();
+      if (!pr.ok) throw new Error(plan.error || `plan HTTP ${pr.status}`);
+      if (!plan.targets?.length) throw new Error('No hot signals in the last 7 days');
+
+      // 2) Dossiers, sequential (each is its own request → no timeout risk)
+      const dossiers = [];
+      for (let i = 0; i < plan.targets.length; i++) {
+        const t = plan.targets[i];
+        status.textContent = `2/4 · Dossier ${i + 1}/${plan.targets.length}: ${t.name || t.buyerId}… (batch of ${plan.targets.length}, ~${Math.ceil(plan.targets.length / 4)} min total)`;
+        try {
+          const dr = await fetch(`/api/starbridge?action=dossier&buyerId=${encodeURIComponent(t.buyerId)}&buyerName=${encodeURIComponent(t.name || '')}`);
+          const d = await dr.json();
+          if (dr.ok) { d._signal_count = t.signal_count; d._intent_score = t.intent_score; d._strong_signals = t.strong_signals; dossiers.push(d); }
+        } catch {}
+      }
+
+      // 3) Per-rep digests
+      status.textContent = '3/4 · Writing per-rep digests (Claude)…';
+      const summaries = dossiers.map(d => ({
+        school_name: d.school_name, prepared_for: d.prepared_for, deal_state: d.deal_state,
+        skip_recommended: d.skip_recommended, theme: d.dossier?.theme || null,
+        banner: d.dossier?.banner_text || null
+      }));
+      const gr = await fetch(`/api/starbridge?action=weekly&sub=digests&week=${plan.week}`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ week: plan.week, dossiers: summaries })
+      });
+      const dg = await gr.json();
+      if (!gr.ok) throw new Error(dg.error || `digests HTTP ${gr.status}`);
+
+      // 4) Save bundle to the week's Drive folder
+      status.textContent = '4/5 · Saving bundle to Google Drive…';
+      wkBundle = { week: plan.week, targets: plan.targets, dossiers, digests: dg.digests };
+      const sr = await fetch(`/api/starbridge?action=weekly&sub=save`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(wkBundle)
+      });
+      const sv = await sr.json();
+      if (!sr.ok) throw new Error(sv.error || `save HTTP ${sr.status}`);
+      wkBundle.folder_url = sv.folder_url;
+
+      // 5) Generate + upload one PDF per dossier
+      await loadPdfLibs();
+      let pdfOk = 0, pdfFail = 0;
+      for (let i = 0; i < dossiers.length; i++) {
+        const d = dossiers[i];
+        status.textContent = `5/5 · PDF ${i + 1}/${dossiers.length}: ${d.school_name || '?'}…`;
+        try {
+          const b64 = await dossierToPdfBase64(d);
+          const ur = await fetch(`/api/starbridge?action=weekly&sub=pdf`, {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ week: plan.week, school_name: d.school_name || `dossier-${i + 1}`, pdf_base64: b64 })
+          });
+          if (ur.ok) pdfOk++; else pdfFail++;
+        } catch { pdfFail++; }
+      }
+
+      wkRender(wkBundle);
+      wkLoadPastWeeks();
+      document.getElementById('wk-notify').style.display = 'inline-block';
+      status.innerHTML = `✅ Week of ${plan.week} · ${dossiers.length} dossiers + ${Object.keys(dg.digests || {}).length} digests · ` +
+        `${pdfOk} PDFs on <a href="${sv.folder_url}" target="_blank" style="color:var(--ds-primary);font-weight:600;">Drive</a>` +
+        `${pdfFail ? ` <span style="color:var(--ds-red);">(${pdfFail} PDF failed)</span>` : ''}. Use <b>Send Slack notice</b> to alert the reps.`;
+    } catch (e) {
+      status.innerHTML = `<span style="color:var(--ds-red);">Error: ${escapeHtml(e.message)}</span>`;
+    } finally {
+      btn.disabled = false; btn.textContent = '⚡ Generate this week';
+    }
+  }
+  document.getElementById('wk-generate')?.addEventListener('click', wkGenerate);
+
+  document.getElementById('wk-notify')?.addEventListener('click', async () => {
+    if (!wkBundle) return;
+    const status = document.getElementById('wk-status');
+    status.textContent = 'Sending Slack notice…';
+    try {
+      const r = await fetch('/api/starbridge?action=weekly&sub=notify', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ week: wkBundle.week, dossier_count: (wkBundle.dossiers || []).length, folder_url: wkBundle.folder_url || null })
+      });
+      const d = await r.json();
+      if (!r.ok) throw new Error(d.error || `HTTP ${r.status}`);
+      status.textContent = '📣 Slack notice sent (Jay, Michael, Charles, Drew).';
+    } catch (e) { status.innerHTML = `<span style="color:var(--ds-red);">Slack: ${escapeHtml(e.message)}</span>`; }
+  });
+
+  function wkRender(bundle) {
+    const el = document.getElementById('wk-render');
+    const digests = bundle.digests || {};
+    const dossiers = bundle.dossiers || [];
+    const digestCards = Object.entries(digests).map(([rep, dg]) => `
+      <div class="panel" style="flex:1;min-width:260px;">
+        <div style="font-weight:700;color:var(--ds-primary-3);font-size:13.5px;">👤 ${escapeHtml(rep)}</div>
+        <div style="font-size:13px;font-weight:600;margin:6px 0 8px;">${dg.headline ? escapeHtml(dg.headline) : '—'}</div>
+        <ul style="margin:0;padding-left:16px;font-size:12px;line-height:1.55;color:var(--ds-text);">
+          ${(dg.bullets || []).map(bt => `<li style="margin-bottom:4px;">${bt}</li>`).join('')}
+        </ul>
+        ${dg.focus_account ? `<div style="margin-top:8px;font-size:11.5px;color:#0A7D68;">🎯 First hour: <b>${escapeHtml(dg.focus_account)}</b></div>` : ''}
+        <div style="margin-top:6px;font-size:10.5px;color:var(--ds-hint);">${dg.dossier_count || 0} dossiers · ${dg.moved_deals || 0} deals moved this week</div>
+      </div>`).join('');
+
+    const themeColor = t => t === 'hot' ? '#C2410C' : t === 'warm' ? '#B45309' : '#475569';
+    const dossierRows = dossiers.map((d, i) => `
+      <tr style="cursor:pointer;" onclick="wkOpenDossier(${i})">
+        <td><b>${escapeHtml(d.school_name || '?')}</b>${d.skip_recommended ? ' <span style="font-size:10px;color:#A32D2D;">(skip: closed-won)</span>' : ''}</td>
+        <td><span style="color:${themeColor(d.dossier?.theme)};font-weight:700;font-size:11px;text-transform:uppercase;">${escapeHtml(d.dossier?.theme || '—')}</span></td>
+        <td>${escapeHtml(d.prepared_for || 'Unassigned')}</td>
+        <td class="num">${d._intent_score || d._signal_count || '—'}${d._strong_signals ? ` <span title="strong intent signals (RFP/Purchase/Meeting)" style="color:#C2410C;font-weight:700;font-size:10px;">🔥${d._strong_signals}</span>` : ''}</td>
+        <td style="font-size:11px;color:var(--ds-hint);">▸ open</td>
+      </tr>`).join('');
+
+    el.innerHTML = `
+      <div style="display:flex;gap:14px;flex-wrap:wrap;margin-bottom:14px;">${digestCards || '<div class="panel" style="flex:1;">No digests</div>'}</div>
+      <div class="panel">
+        <div class="panel-title">📂 Dossiers · week of ${escapeHtml(bundle.week || '')}</div>
+        <table style="width:100%;margin-top:8px;">
+          <thead><tr><th>School</th><th>Theme</th><th>Prepared for</th><th class="num" title="Intent score: strong signals (RFP/Purchase/Meeting) count 3x">Intent</th><th></th></tr></thead>
+          <tbody>${dossierRows || '<tr><td colspan="5" style="color:var(--ds-hint);">None</td></tr>'}</tbody>
+        </table>
+      </div>`;
+  }
+
+  // Open a saved dossier in the full 2-page layout (reuses renderDossier)
+  window.wkOpenDossier = function (i) {
+    const d = (wkBundle?.dossiers || [])[i];
+    if (!d) return;
+    document.getElementById('wk-panel').style.display = 'none';
+    document.getElementById('wk-builder-panel').style.display = 'block';
+    document.querySelectorAll('.wk-subtab').forEach(x => {
+      const on = x.dataset.wk === 'builder';
+      x.classList.toggle('active', on);
+      x.style.background = on ? 'var(--ds-primary)' : 'rgba(255,255,255,.5)';
+      x.style.color = on ? '#fff' : 'var(--ds-primary)';
+    });
+    renderDossier(d);
+    document.getElementById('do-print').style.display = 'inline-block';
+    document.getElementById('do-status').textContent = `Saved dossier · week of ${wkBundle.week}`;
+    document.getElementById('dossier-render').scrollIntoView({ behavior: 'smooth' });
+  };
 
   // ---------- LOG ACTIVITY MODAL ----------
   let logSelectedContact = null;
