@@ -16,6 +16,104 @@ import {
 
 export const config = { maxDuration: 60 };
 
+// ---------- Google Drive client (service account, zero deps) ----------
+// Env: GOOGLE_SA_EMAIL, GOOGLE_SA_PRIVATE_KEY (keep \n escapes), DRIVE_FOLDER_ID
+import crypto from 'node:crypto';
+
+let _gdToken = null; // { token, exp }
+function _b64url(buf) {
+  return Buffer.from(buf).toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+async function driveToken() {
+  const email = process.env.GOOGLE_SA_EMAIL;
+  let key = process.env.GOOGLE_SA_PRIVATE_KEY;
+  if (!email || !key) throw new Error('GOOGLE_SA_EMAIL / GOOGLE_SA_PRIVATE_KEY not set');
+  key = key.replace(/\\n/g, '\n');
+  const now = Math.floor(Date.now() / 1000);
+  if (_gdToken && _gdToken.exp > now + 60) return _gdToken.token;
+  const header = _b64url(JSON.stringify({ alg: 'RS256', typ: 'JWT' }));
+  const claims = _b64url(JSON.stringify({
+    iss: email, scope: 'https://www.googleapis.com/auth/drive',
+    aud: 'https://oauth2.googleapis.com/token', iat: now, exp: now + 3600
+  }));
+  const signer = crypto.createSign('RSA-SHA256');
+  signer.update(`${header}.${claims}`);
+  const jwt = `${header}.${claims}.${_b64url(signer.sign(key))}`;
+  const r = await fetch('https://oauth2.googleapis.com/token', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: `grant_type=${encodeURIComponent('urn:ietf:params:oauth:grant-type:jwt-bearer')}&assertion=${jwt}`
+  });
+  if (!r.ok) throw new Error(`Google token ${r.status}: ${(await r.text()).slice(0, 300)}`);
+  const j = await r.json();
+  _gdToken = { token: j.access_token, exp: now + (j.expires_in || 3600) };
+  return _gdToken.token;
+}
+async function driveFetch(path, opts = {}) {
+  const token = await driveToken();
+  const r = await fetch(`https://www.googleapis.com/drive/v3${path}`, {
+    ...opts, headers: { Authorization: `Bearer ${token}`, ...(opts.headers || {}) }
+  });
+  if (!r.ok) throw new Error(`Drive ${path.split('?')[0]} ${r.status}: ${(await r.text()).slice(0, 300)}`);
+  return r;
+}
+function _gdEsc(name) { return name.replace(/'/g, "\\'"); }
+function rootFolderId() {
+  const id = process.env.DRIVE_FOLDER_ID;
+  if (!id) throw new Error('DRIVE_FOLDER_ID not set');
+  return id;
+}
+async function findChild(parentId, name, { folderOnly = false } = {}) {
+  const q = encodeURIComponent(
+    `'${parentId}' in parents and name = '${_gdEsc(name)}' and trashed = false` +
+    (folderOnly ? ` and mimeType = 'application/vnd.google-apps.folder'` : '')
+  );
+  const r = await driveFetch(`/files?q=${q}&fields=files(id,name,mimeType,modifiedTime)&supportsAllDrives=true&includeItemsFromAllDrives=true&pageSize=5`);
+  return ((await r.json()).files || [])[0] || null;
+}
+async function ensureFolder(parentId, name) {
+  const existing = await findChild(parentId, name, { folderOnly: true });
+  if (existing) return existing.id;
+  const r = await driveFetch(`/files?supportsAllDrives=true&fields=id`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name, mimeType: 'application/vnd.google-apps.folder', parents: [parentId] })
+  });
+  return (await r.json()).id;
+}
+async function listFolders(parentId) {
+  const q = encodeURIComponent(`'${parentId}' in parents and mimeType = 'application/vnd.google-apps.folder' and trashed = false`);
+  const r = await driveFetch(`/files?q=${q}&fields=files(id,name,modifiedTime)&supportsAllDrives=true&includeItemsFromAllDrives=true&pageSize=100`);
+  return ((await r.json()).files || []);
+}
+// Upload (create or overwrite-by-name) into a folder. content: Buffer.
+async function uploadFile(folderId, name, content, mimeType) {
+  const existing = await findChild(folderId, name);
+  const token = await driveToken();
+  const boundary = '-------dsb' + Date.now();
+  const metadata = existing ? { name } : { name, parents: [folderId] };
+  const body = Buffer.concat([
+    Buffer.from(`--${boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n${JSON.stringify(metadata)}\r\n--${boundary}\r\nContent-Type: ${mimeType}\r\n\r\n`),
+    content,
+    Buffer.from(`\r\n--${boundary}--`)
+  ]);
+  const uploadUrl = existing
+    ? `https://www.googleapis.com/upload/drive/v3/files/${existing.id}?uploadType=multipart&supportsAllDrives=true&fields=id,webViewLink`
+    : `https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&supportsAllDrives=true&fields=id,webViewLink`;
+  const r = await fetch(uploadUrl, {
+    method: existing ? 'PATCH' : 'POST',
+    headers: { Authorization: `Bearer ${token}`, 'Content-Type': `multipart/related; boundary=${boundary}` },
+    body
+  });
+  if (!r.ok) throw new Error(`Drive upload ${r.status}: ${(await r.text()).slice(0, 300)}`);
+  return r.json();
+}
+async function downloadFile(fileId) {
+  const r = await driveFetch(`/files/${fileId}?alt=media&supportsAllDrives=true`);
+  return Buffer.from(await r.arrayBuffer());
+}
+function folderUrl(folderId) { return `https://drive.google.com/drive/folders/${folderId}`; }
+// ---------- end Google Drive client ----------
+
 // ---------- HubSpot helpers (dossier) ----------
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 async function hsSearch(hsToken, obj, body, attempt = 0) {
@@ -286,10 +384,9 @@ export default async function handler(req, res) {
       const now = new Date();
       const wk = (() => { const d = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate())); d.setUTCDate(d.getUTCDate() - ((d.getUTCDay() + 6) % 7)); return d.toISOString().slice(0, 10); })();
       const week = url.searchParams.get('week') || wk;
-      const PAGE_TITLE = w => `Weekly Dossiers - ${w}`;
-      const { upsertJsonPage, listPagesByTitlePrefix, findPageByExactTitle, extractInsightJson, transcriptsParentId, pageUrl } =
-        await import('../lib/confluence.js');
-      const parentId = process.env.CONFLUENCE_WEEKLY_PARENT_ID || transcriptsParentId();
+      // Storage: Google Drive (inlined client above). Week folder "Week of YYYY-MM-DD"
+      // inside DRIVE_FOLDER_ID; bundle.json + one PDF per dossier.
+      const WEEK_FOLDER = w => `Week of ${w}`;
 
       // --- plan: pick this week's top 25 targets, weighted toward STRONG intent ---
       // Strong intent = RFP / Purchase / Meeting signals (score 3x); general
@@ -388,33 +485,51 @@ Return VALID JSON only:
         return res.status(200).json({ week, digests });
       }
 
-      // --- save: persist the full weekly bundle to Confluence ---
+      // --- save: persist the weekly bundle (JSON) to the week's Drive folder ---
       if (sub === 'save') {
         const bundle = req.body || {};
         if (!bundle.week) bundle.week = week;
         bundle.saved_at = new Date().toISOString();
         bundle.saved_by = user.email;
-        const saved = await upsertJsonPage(parentId, PAGE_TITLE(bundle.week), bundle);
-        return res.status(200).json({ ok: true, week: bundle.week, ...saved, url: pageUrl(saved.page_id) });
+        const folderId = await ensureFolder(rootFolderId(), WEEK_FOLDER(bundle.week));
+        await uploadFile(folderId, 'bundle.json', Buffer.from(JSON.stringify(bundle, null, 2)), 'application/json');
+        return res.status(200).json({ ok: true, week: bundle.week, folder_id: folderId, folder_url: folderUrl(folderId) });
       }
 
-      // --- list: saved weeks ---
+      // --- pdf: upload one dossier PDF (base64) into the week's folder ---
+      if (sub === 'pdf') {
+        const b = req.body || {};
+        if (!b.pdf_base64 || !b.school_name) return res.status(400).json({ error: 'school_name and pdf_base64 required' });
+        const w2 = b.week || week;
+        const folderId = await ensureFolder(rootFolderId(), WEEK_FOLDER(w2));
+        const safeName = String(b.school_name).replace(/[\\/:*?"<>|]/g, '-').slice(0, 120);
+        const buf = Buffer.from(b.pdf_base64, 'base64');
+        if (buf.length > 4 * 1024 * 1024) return res.status(413).json({ error: 'PDF too large (>4MB)' });
+        const up = await uploadFile(folderId, `${safeName}.pdf`, buf, 'application/pdf');
+        return res.status(200).json({ ok: true, file_id: up.id, url: up.webViewLink || null });
+      }
+
+      // --- list: saved weeks (Drive subfolders) ---
       if (sub === 'list') {
-        const pages = await listPagesByTitlePrefix(parentId, 'Weekly Dossiers - ');
-        const weeks = pages
-          .map(p => ({ week: (p.title || '').replace('Weekly Dossiers - ', ''), page_id: p.page_id, updated_at: p.updated_at }))
+        const folders = await listFolders(rootFolderId());
+        const weeks = folders
+          .filter(f => (f.name || '').startsWith('Week of '))
+          .map(f => ({ week: f.name.replace('Week of ', ''), folder_id: f.id, folder_url: folderUrl(f.id), updated_at: f.modifiedTime }))
           .sort((a, b) => b.week.localeCompare(a.week));
         return res.status(200).json({ weeks });
       }
 
-      // --- get: load one saved week ---
+      // --- get: load one saved week's bundle.json ---
       if (sub === 'get') {
-        const page = await findPageByExactTitle(parentId, PAGE_TITLE(week));
-        if (!page) return res.status(404).json({ error: `No saved bundle for week ${week}` });
-        const bodyHtml = page.body?.storage?.value || '';
-        const bundle = extractInsightJson(bodyHtml);
-        if (!bundle) return res.status(500).json({ error: 'Saved page exists but JSON could not be parsed' });
-        return res.status(200).json({ week, bundle });
+        const folder = await findChild(rootFolderId(), WEEK_FOLDER(week), { folderOnly: true });
+        if (!folder) return res.status(404).json({ error: `No saved folder for week ${week}` });
+        const file = await findChild(folder.id, 'bundle.json');
+        if (!file) return res.status(404).json({ error: 'Folder exists but bundle.json is missing' });
+        const buf = await downloadFile(file.id);
+        let bundle;
+        try { bundle = JSON.parse(buf.toString('utf8')); }
+        catch { return res.status(500).json({ error: 'bundle.json could not be parsed' }); }
+        return res.status(200).json({ week, bundle, folder_url: folderUrl(folder.id) });
       }
 
       // --- notify: Slack webhook to the team (reps minus Cody) ---
@@ -426,7 +541,8 @@ Return VALID JSON only:
         const dashUrl = `https://${req.headers.host}/sales.html`;
         const text = `📂 *Weekly dossiers are ready* (week of ${b.week || week})\n` +
           `${b.dossier_count ?? '?'} account dossier${(b.dossier_count || 0) === 1 ? '' : 's'} + personal digests for: ${names}\n` +
-          `Open the *Dossier → Weekly* tab: ${dashUrl}`;
+          `Open the *Dossier → Weekly* tab: ${dashUrl}` +
+          (b.folder_url ? `\nPDFs on Drive: ${b.folder_url}` : '');
         const r4 = await fetch(hook, {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ text })
