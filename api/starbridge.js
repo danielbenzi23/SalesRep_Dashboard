@@ -512,6 +512,83 @@ export default async function handler(req, res) {
       return res.status(200).json(await generateDossier(buyerId, buyerName));
     }
 
+    // ===== LEAD DOSSIER: resolve a HubSpot company name → Starbridge buyer → dossier =====
+    if (action === 'lead_dossier') {
+      const company = (url.searchParams.get('company') || '').trim();
+      if (company.length < 2) return res.status(400).json({ error: 'company required' });
+      let buyers;
+      try { buyers = await searchBuyers(company, { limit: 5 }); }
+      catch (e) { return res.status(502).json({ error: `Starbridge search failed: ${e.message}` }); }
+      const list = Array.isArray(buyers) ? buyers : (buyers?.result || buyers?.buyers || []);
+      const match = list[0];
+      if (!match) return res.status(404).json({ error: 'no_starbridge_match', company });
+      const buyerId = match.id || match.buyerId;
+      const buyerName = match.name || match.buyerName || company;
+      const d = await generateDossier(buyerId, buyerName);
+      d._matched_buyer = { id: buyerId, name: buyerName, searched: company };
+      return res.status(200).json(d);
+    }
+
+    // ===== DRAFT EMAIL: Claude writes a personalized outreach draft for a lead =====
+    if (action === 'draft_email') {
+      const apiKey = process.env.ANTHROPIC_API_KEY;
+      if (!apiKey) return res.status(500).json({ error: 'ANTHROPIC_API_KEY not set' });
+      const lead = {
+        name: url.searchParams.get('name') || '',
+        email: url.searchParams.get('email') || '',
+        title: url.searchParams.get('title') || '',
+        company: url.searchParams.get('company') || '',
+        score: url.searchParams.get('score') || '',
+        tier: url.searchParams.get('tier') || '',
+        stage: url.searchParams.get('stage') || ''
+      };
+      const repName = url.searchParams.get('rep') || 'the DegreeSight team';
+      // Light company context from Starbridge (best effort, never blocks the draft)
+      let sbContext = null;
+      if (lead.company && lead.company.length > 2) {
+        try {
+          const buyers = await searchBuyers(lead.company, { limit: 1 });
+          const list = Array.isArray(buyers) ? buyers : (buyers?.result || buyers?.buyers || []);
+          if (list[0]) {
+            const [sum, sigs] = await Promise.allSettled([
+              getBuyerSummary(list[0].id || list[0].buyerId),
+              listRecentBuyerSignals(list[0].id || list[0].buyerId, { pageSize: 5 })
+            ]);
+            sbContext = {
+              summary: sum.status === 'fulfilled' ? sum.value : null,
+              recent_signals: sigs.status === 'fulfilled' ? (Array.isArray(sigs.value) ? sigs.value : (sigs.value?.result || [])).slice(0, 5) : []
+            };
+          }
+        } catch {}
+      }
+      const prompt = `You write a first-touch sales email for ${repName}, a DegreeSight sales rep. DegreeSight sells AI-powered transfer credit evaluation and degree-audit for higher ed (Inbound student-facing transferability check; Insight registrar-grade automated credit evaluation). Partner references: Indiana Wesleyan, Cumberlands, Youngstown State, Roosevelt University.
+
+WRITING RULES (hard):
+- Plain text only, NO html, NO markdown. NO em dashes. Use "candidly" rather than "honestly".
+- Short: subject ≤9 words; body ≤130 words, 3 short paragraphs max, one clear ask (15-min call).
+- Personal and specific to the lead and their institution. No corporate filler, no "I hope this finds you well".
+- If signals show a concrete trigger (RFP, new hire, initiative), lead with it. If context is thin, be candid and lead with the transfer-credit pain.
+- Sign off with just the rep first name.
+
+LEAD: ${JSON.stringify(lead)}
+COMPANY CONTEXT (Starbridge): ${JSON.stringify(sbContext) || 'none'}
+
+Return VALID JSON only: {"subject": "...", "body": "..."}`;
+      const r2 = await fetch('https://api.anthropic.com/v1/messages', {
+        method: 'POST',
+        headers: { 'x-api-key': apiKey, 'anthropic-version': '2023-06-01', 'content-type': 'application/json' },
+        body: JSON.stringify({ model: 'claude-haiku-4-5', max_tokens: 700, messages: [{ role: 'user', content: prompt }] })
+      });
+      if (!r2.ok) return res.status(502).json({ error: `Claude ${r2.status}: ${(await r2.text()).slice(0, 200)}` });
+      const j2 = await r2.json();
+      const txt = (j2.content?.[0]?.text || '').replace(/^```(?:json)?\s*/gim, '').replace(/\s*```\s*$/gim, '');
+      const s2 = txt.indexOf('{'), e2 = txt.lastIndexOf('}');
+      let draft;
+      try { draft = JSON.parse(txt.slice(s2, e2 + 1).replace(/,(\s*[\}\]])/g, '$1')); }
+      catch { return res.status(502).json({ error: 'Claude did not return valid JSON' }); }
+      return res.status(200).json({ to: lead.email, subject: draft.subject || '', body: draft.body || '', _sb_context: !!sbContext });
+    }
+
     // ===== WEEKLY: weekly dossier batch + per-rep digests (saved to Confluence) =====
     if (action === 'weekly') {
       const sub = url.searchParams.get('sub') || 'plan';
