@@ -205,6 +205,196 @@ async function fetchHubSpotCompanyData(hsToken, schoolName) {
   return out;
 }
 
+// ---------- Server-side dossier HTML + PDF (for the automatic weekly cron) ----------
+const DS_LOGO_URL = 'https://2675906.fs1.hubspotusercontent-na1.net/hubfs/2675906/Ed%20Awards/DegreeSight.png';
+function escS(s) {
+  return String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+// Mirrors dossierMarkup() in sales.html — keep the two in sync when the layout changes.
+function serverDossierHtml(d) {
+  const doc = d.dossier || {};
+  const initials = (d.school_name || '?').split(/\s+/).slice(0, 2).map(w => w[0]).join('').toUpperCase();
+  const repName = 'DegreeSight';
+  const themeColors = { hot: '#C0472E', warm: '#B4700F', neutral: '#12305B' };
+  const bannerBg = { hot: '#FDF0EC', warm: '#FDF6E8', neutral: '#EEF2F9' };
+  const theme = doc.theme || 'neutral';
+  const stat = (s) => `<div style="flex:1;min-width:110px;background:#fff;border:1px solid #E3E8F0;border-radius:10px;padding:12px 14px;"><div style="font:700 26px/1 Inter,sans-serif;color:${s.warn ? '#C0472E' : '#0A1F3C'};">${s.n || ''}</div><div style="font-size:10.5px;color:#5B6B82;margin-top:4px;line-height:1.35;">${s.l || ''}</div></div>`;
+  const stackRow = (r) => `<div style="display:flex;justify-content:space-between;padding:8px 12px;border-top:1px solid #E9EDF3;font-size:12px;"><span style="color:#42526B;">${escS(r.label)}</span><b style="color:${r.ok ? '#0A7D68' : '#0A1F3C'};">${escS(r.value)}</b></div>`;
+  const person = (p) => {
+    const badgeColors = { owner: 'background:#E5F5F2;color:#0A7D68;', stale: 'background:#FDF0EC;color:#C0472E;', neutral: 'background:#EEF2F9;color:#12305B;' };
+    return `<div style="background:#fff;border:1px solid #E3E8F0;border-radius:10px;padding:14px 16px;margin-bottom:8px;"><div style="display:flex;justify-content:space-between;align-items:center;"><b style="font-size:14px;color:#0A1F3C;">${escS(p.name)}</b><span style="font-size:9px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;padding:3px 9px;border-radius:999px;${badgeColors[p.badge_type] || badgeColors.neutral}">${escS(p.badge)}</span></div><div style="font-size:11.5px;color:#42526B;margin-top:2px;">${escS(p.role)}</div><div style="font-size:11.5px;color:#5B6B82;margin-top:6px;line-height:1.45;">${p.note || ''}</div>${p.contact ? `<div style="font-size:11px;color:#1034E5;margin-top:6px;">${escS(p.contact)}</div>` : ''}</div>`;
+  };
+  const chip = (c) => `<span style="display:inline-block;background:rgba(255,255,255,.12);border:1px solid rgba(255,255,255,.25);border-radius:999px;padding:4px 12px;font-size:10px;color:#fff;margin:3px 4px 3px 0;"><b>${escS(c.src)}</b> · ${escS(c.detail)}</span>`;
+  const watchRow = (w, i) => `<div style="display:flex;gap:12px;background:#FDF6E8;border-radius:10px;padding:12px 14px;margin-bottom:8px;align-items:flex-start;"><div style="width:22px;height:22px;border-radius:50%;background:#B4700F;color:#fff;font:700 11px/22px Inter,sans-serif;text-align:center;flex:none;">${i + 1}</div><div style="font-size:12px;color:#42526B;line-height:1.5;">${w}</div></div>`;
+  const secTitle = (t) => `<div style="display:flex;align-items:center;gap:8px;margin:18px 0 10px;"><div style="width:18px;height:2px;background:#15B4A6;"></div><div style="font:700 11px Inter,sans-serif;letter-spacing:.14em;text-transform:uppercase;color:#0A7D68;">${t}</div></div>`;
+  const body = `
+    <div class="dossier-page" style="background:#fff;overflow:hidden;">
+      <div style="background:#0A1F3C;padding:22px 30px;display:flex;justify-content:space-between;align-items:center;">
+        <img src="${DS_LOGO_URL}" alt="DegreeSight" style="height:34px;filter:brightness(0) invert(1);" />
+        <div style="text-align:right;">
+          <div style="font-size:9px;letter-spacing:.22em;color:#15B4A6;font-weight:700;">GO-TO-MARKET INTELLIGENCE</div>
+          <div style="font:700 19px Inter,sans-serif;color:#fff;">Account Dossier</div>
+          <span style="display:inline-block;margin-top:5px;border:1px solid #15B4A6;color:#15B4A6;border-radius:999px;font-size:9px;font-weight:700;letter-spacing:.14em;padding:3px 12px;">${escS((doc.tag || 'ACCOUNT REVIEW').toUpperCase())}</span>
+        </div>
+      </div>
+      <div style="padding:14px 30px;border-bottom:1px solid #E9EDF3;font-size:11px;color:#5B6B82;">
+        Prepared by <b style="color:#0A1F3C;">${escS(repName)}</b>&nbsp;&nbsp;For <b style="color:#0A1F3C;">${escS(d.prepared_for || 'Sales team')}</b>&nbsp;&nbsp;Compiled <b style="color:#0A1F3C;">${escS(d.compiled_date || '')}</b>
+      </div>
+      <div style="padding:20px 30px 6px;display:flex;gap:16px;align-items:center;">
+        <div style="width:54px;height:54px;border:1px solid #E3E8F0;border-radius:12px;display:grid;place-items:center;font:700 18px Inter,sans-serif;color:#12305B;flex:none;">${initials}</div>
+        <div><div style="font:700 26px Inter,sans-serif;color:#0A1F3C;">${escS(d.school_name)}</div><div style="font-size:12px;color:#5B6B82;margin-top:2px;">${doc.context_line || ''}</div></div>
+      </div>
+      <div style="margin:16px 30px;background:${bannerBg[theme]};border:1px solid ${themeColors[theme]}33;border-radius:12px;padding:14px 18px;display:flex;gap:14px;align-items:flex-start;">
+        <span style="background:${themeColors[theme]};color:#fff;font:700 9px Inter,sans-serif;letter-spacing:.1em;border-radius:999px;padding:4px 12px;white-space:nowrap;flex:none;margin-top:2px;">${escS((doc.banner_label || 'WHY IT MATTERS').toUpperCase())}</span>
+        <div style="font-size:12px;color:#42526B;line-height:1.55;">${doc.banner_text || ''}</div>
+      </div>
+      <div style="padding:0 30px;">
+        ${secTitle('Read this first')}
+        <div style="border-left:3px solid #15B4A6;background:#F7FAF9;border-radius:0 10px 10px 0;padding:14px 18px;">
+          <div style="font:700 10px Inter,sans-serif;letter-spacing:.12em;color:#0A7D68;margin-bottom:8px;">THREE THINGS THAT DECIDE THIS ACCOUNT</div>
+          <ol style="margin:0;padding-left:18px;font-size:12px;color:#42526B;line-height:1.55;">${(doc.tldr || []).map(t => `<li style="margin-bottom:6px;">${t}</li>`).join('')}</ol>
+        </div>
+        ${secTitle('The numbers')}
+        <div style="display:flex;gap:10px;flex-wrap:wrap;">${(doc.stats || []).map(stat).join('')}</div>
+        ${secTitle('Tech stack & what matters')}
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;">
+          <div style="border:1px solid #E3E8F0;border-radius:10px;overflow:hidden;"><div style="background:#0A1F3C;color:#fff;font:700 10px Inter,sans-serif;letter-spacing:.1em;padding:8px 12px;">SYSTEMS ON FILE</div>${(doc.stack || []).map(stackRow).join('')}</div>
+          <div style="font-size:12px;color:#42526B;line-height:1.55;">${doc.stack_matters || ''}</div>
+        </div>
+        ${secTitle('Who is on file')}
+        ${(doc.people || []).length ? (doc.people || []).map(person).join('') : '<div style="font-size:12px;color:#5B6B82;">No contacts on file in HubSpot. Candidly, sourcing an enrollment or registrar contact is step one.</div>'}
+      </div>
+      <div style="background:#0A1F3C;margin-top:18px;padding:16px 30px 20px;">
+        <div style="font:700 10px Inter,sans-serif;letter-spacing:.14em;color:#15B4A6;margin-bottom:8px;">HOW THIS DOSSIER WAS ASSEMBLED</div>
+        <div>${(doc.provenance_chips || []).map(chip).join('')}</div>
+        <div style="font-size:11px;color:rgba(255,255,255,.85);line-height:1.55;margin-top:8px;">${doc.provenance_point || ''}</div>
+      </div>
+    </div>
+    <div class="dossier-page" style="background:#fff;overflow:hidden;padding:8px 30px 22px;">
+      ${secTitle('Why they would want DegreeSight')}
+      <ul style="list-style:none;margin:0;padding:0;">${(doc.fit || []).map(f => `<li style="display:flex;gap:10px;font-size:12px;color:#42526B;line-height:1.55;margin-bottom:8px;"><span style="width:8px;height:8px;border-radius:50%;background:#15B4A6;flex:none;margin-top:5px;"></span><span>${f}</span></li>`).join('')}</ul>
+      ${secTitle('Watch for')}
+      ${(doc.watch || []).map(watchRow).join('')}
+      ${secTitle('Bring to the first call')}
+      <ul style="margin:0;padding-left:18px;font-size:12px;color:#42526B;line-height:1.6;">${(doc.bring || []).map(b => `<li style="margin-bottom:6px;">${b}</li>`).join('')}</ul>
+      <div style="background:#0A1F3C;border-radius:12px;padding:20px 24px;margin-top:18px;">
+        <div style="font-size:14px;line-height:1.6;color:#fff;"><b style="color:#15B4A6;">${escS(doc.pull_highlight)}</b> ${doc.pull_body || ''}</div>
+        <div style="font-size:10px;color:rgba(255,255,255,.55);margin-top:10px;">Strategic framing · ${escS(d.school_name)} dossier</div>
+      </div>
+      <div style="display:flex;justify-content:space-between;border-top:1px solid #E9EDF3;margin-top:16px;padding-top:10px;font-size:10px;color:#5B6B82;">
+        <span>${doc.sources_footer || 'Sources: Starbridge, HubSpot.'}</span>
+        <span><b style="color:#0A1F3C;">DegreeSight</b> · Auto-generated weekly</span>
+      </div>
+    </div>`;
+  return `<!DOCTYPE html><html><head><meta charset="utf-8">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap" rel="stylesheet">
+    <style>
+      * { box-sizing: border-box; margin: 0; }
+      body { font-family: Inter, -apple-system, sans-serif; }
+      .dossier-page { page-break-after: always; width: 100%; }
+      .dossier-page:last-child { page-break-after: auto; }
+    </style></head><body>${body}</body></html>`;
+}
+
+// Headless-Chrome PDF (puppeteer-core + @sparticuz/chromium). Dynamic import so
+// interactive requests never pay the cold-start cost.
+async function renderPdfBuffer(html) {
+  const [{ default: chromium }, { default: puppeteer }] = await Promise.all([
+    import('@sparticuz/chromium'),
+    import('puppeteer-core')
+  ]);
+  const browser = await puppeteer.launch({
+    args: chromium.args,
+    executablePath: await chromium.executablePath(),
+    headless: true
+  });
+  try {
+    const page = await browser.newPage();
+    await page.setContent(html, { waitUntil: 'networkidle0', timeout: 20000 });
+    return Buffer.from(await page.pdf({ format: 'letter', printBackground: true, margin: { top: '0.3in', bottom: '0.3in', left: '0.3in', right: '0.3in' } }));
+  } finally {
+    await browser.close().catch(() => {});
+  }
+}
+
+// ---------- Slack bot (DM per rep) ----------
+// Env: SLACK_BOT_TOKEN (xoxb-, scopes: chat:write, im:write, users:read, users:read.email)
+//      SLACK_TEST_EMAIL (optional) — when set, EVERY DM is rerouted to this user with a [TEST] prefix
+async function slackApi(method, payload) {
+  const token = process.env.SLACK_BOT_TOKEN;
+  if (!token) throw new Error('SLACK_BOT_TOKEN not set');
+  const r = await fetch(`https://slack.com/api/${method}`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json; charset=utf-8' },
+    body: JSON.stringify(payload)
+  });
+  const j = await r.json();
+  if (!j.ok) throw new Error(`Slack ${method}: ${j.error}`);
+  return j;
+}
+async function slackDmByEmail(email, text) {
+  const testEmail = process.env.SLACK_TEST_EMAIL;
+  const target = testEmail || email;
+  const prefix = testEmail && testEmail !== email ? `🧪 *[TEST — would go to ${email}]*\n` : '';
+  const u = await slackApi('users.lookupByEmail', { email: target });
+  const conv = await slackApi('conversations.open', { users: u.user.id });
+  await slackApi('chat.postMessage', { channel: conv.channel.id, text: prefix + text, unfurl_links: false });
+}
+
+// Full dossier generation (Starbridge + HubSpot + Claude). Shared by the
+// interactive ?action=dossier route and the automatic weekly cron.
+async function generateDossier(buyerId, buyerName) {
+  const hsToken = process.env.HUBSPOT_TOKEN;
+  const [summaryRes, signalsRes, attributesRes, hubspotRes] = await Promise.allSettled([
+    getBuyerSummary(buyerId),
+    listRecentBuyerSignals(buyerId, { pageSize: 15 }),
+    getBuyerAttributes(buyerId),
+    hsToken && buyerName ? fetchHubSpotCompanyData(hsToken, buyerName) : Promise.resolve(null)
+  ]);
+  const summary = summaryRes.status === 'fulfilled' ? summaryRes.value : null;
+  const signals = signalsRes.status === 'fulfilled' ? signalsRes.value : [];
+  const attributes = attributesRes.status === 'fulfilled' ? attributesRes.value : {};
+  const hubspot = hubspotRes.status === 'fulfilled' ? hubspotRes.value : null;
+  const skip = hubspot && hubspot.deal_state === 'closed_won';
+  const claudePayload = {
+    school_name: buyerName,
+    starbridge_summary: summary,
+    starbridge_attributes: attributes,
+    recent_signals: (Array.isArray(signals) ? signals : (signals?.result || [])).slice(0, 10),
+    hubspot: hubspot ? {
+      company: hubspot.company,
+      owner: hubspot.owner_name,
+      destination_owner: hubspot.destination_owner,
+      deal_state: hubspot.deal_state,
+      contacts: hubspot.contacts.slice(0, 10),
+      deals: hubspot.deals.map(d => ({ name: d.dealname, stage: d.dealstage, amount: d.amount }))
+    } : null
+  };
+  let dossier = null, claude_error = null;
+  try { dossier = await claudeDossier(claudePayload); }
+  catch (e) { claude_error = e.message; }
+  return {
+    buyerId,
+    school_name: buyerName,
+    skip_recommended: skip,
+    skip_reason: hubspot?.skip_reason || null,
+    prepared_for: hubspot?.destination_owner || null,
+    owner_name: hubspot?.owner_name || null,
+    deal_state: hubspot?.deal_state || 'unknown',
+    hubspot_contacts: hubspot?.contacts || [],
+    compiled_date: new Date().toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' }),
+    dossier,
+    claude_error,
+    _sources: {
+      starbridge_summary: !!summary,
+      starbridge_attributes: Object.keys(attributes || {}).length > 0,
+      signals_count: (Array.isArray(signals) ? signals : (signals?.result || [])).length,
+      hubspot_company: !!hubspot?.company,
+      hubspot_error: hubspot?._error || null
+    }
+  };
+}
+
 // Claude synthesis — builds the dossier copy JSON following the writing rules.
 async function claudeDossier(payload) {
   const apiKey = process.env.ANTHROPIC_API_KEY;
@@ -260,7 +450,14 @@ export default async function handler(req, res) {
   if (!token) return res.status(500).json({ error: 'DASHBOARD_TOKEN not set' });
   const cookies = req.headers.cookie || '';
   const m = cookies.match(/(?:^|;\s*)auth=([^;]+)/);
-  const user = m ? await verifyAuthCookie(m[1], token) : null;
+  let user = m ? await verifyAuthCookie(m[1], token) : null;
+  // Cron / self-chained invocations authenticate with CRON_SECRET instead of a cookie
+  // (Vercel Cron sends "Authorization: Bearer $CRON_SECRET" automatically when the env is set).
+  const cronSecret = process.env.CRON_SECRET;
+  const authHdr = req.headers.authorization || '';
+  const urlSecret = new URL(req.url, 'http://x').searchParams.get('secret');
+  const isCron = !!cronSecret && (authHdr === `Bearer ${cronSecret}` || urlSecret === cronSecret);
+  if (!user && isCron) user = { email: 'cron@degreesight.com', role: 'system' };
   if (!user) return res.status(401).json({ error: 'Not authenticated' });
 
   const url = new URL(req.url, `http://${req.headers.host || 'x'}`);
@@ -312,62 +509,7 @@ export default async function handler(req, res) {
       const buyerId = url.searchParams.get('buyerId');
       const buyerName = url.searchParams.get('buyerName') || '';
       if (!buyerId) return res.status(400).json({ error: 'buyerId required' });
-      const hsToken = process.env.HUBSPOT_TOKEN;
-
-      // 1) Starbridge + HubSpot in parallel
-      const [summaryRes, signalsRes, attributesRes, hubspotRes] = await Promise.allSettled([
-        getBuyerSummary(buyerId),
-        listRecentBuyerSignals(buyerId, { pageSize: 15 }),
-        getBuyerAttributes(buyerId),
-        hsToken && buyerName ? fetchHubSpotCompanyData(hsToken, buyerName) : Promise.resolve(null)
-      ]);
-      const summary = summaryRes.status === 'fulfilled' ? summaryRes.value : null;
-      const signals = signalsRes.status === 'fulfilled' ? signalsRes.value : [];
-      const attributes = attributesRes.status === 'fulfilled' ? attributesRes.value : {};
-      const hubspot = hubspotRes.status === 'fulfilled' ? hubspotRes.value : null;
-
-      // Closed-won guard: dossier is pointless, but still return data + the flag
-      const skip = hubspot && hubspot.deal_state === 'closed_won';
-
-      // 2) Claude synthesis
-      const claudePayload = {
-        school_name: buyerName,
-        starbridge_summary: summary,
-        starbridge_attributes: attributes,
-        recent_signals: (Array.isArray(signals) ? signals : (signals?.result || [])).slice(0, 10),
-        hubspot: hubspot ? {
-          company: hubspot.company,
-          owner: hubspot.owner_name,
-          destination_owner: hubspot.destination_owner,
-          deal_state: hubspot.deal_state,
-          contacts: hubspot.contacts.slice(0, 10),
-          deals: hubspot.deals.map(d => ({ name: d.dealname, stage: d.dealstage, amount: d.amount }))
-        } : null
-      };
-      let dossier = null, claude_error = null;
-      try { dossier = await claudeDossier(claudePayload); }
-      catch (e) { claude_error = e.message; }
-
-      return res.status(200).json({
-        buyerId,
-        school_name: buyerName,
-        skip_recommended: skip,
-        skip_reason: hubspot?.skip_reason || null,
-        prepared_for: hubspot?.destination_owner || null,
-        owner_name: hubspot?.owner_name || null,
-        deal_state: hubspot?.deal_state || 'unknown',
-        hubspot_contacts: hubspot?.contacts || [],
-        compiled_date: new Date().toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' }),
-        dossier,
-        claude_error,
-        _sources: {
-          starbridge_summary: !!summary,
-          starbridge_attributes: Object.keys(attributes || {}).length > 0,
-          signals_count: (Array.isArray(signals) ? signals : (signals?.result || [])).length,
-          hubspot_company: !!hubspot?.company,
-          hubspot_error: hubspot?._error || null
-        }
-      });
+      return res.status(200).json(await generateDossier(buyerId, buyerName));
     }
 
     // ===== WEEKLY: weekly dossier batch + per-rep digests (saved to Confluence) =====
@@ -376,10 +518,10 @@ export default async function handler(req, res) {
       // Reps in the weekly loop. Cody intentionally excluded (routing rules: his
       // net-new accounts flow to Charles).
       const WEEKLY_REPS = [
-        { name: 'Jay Fedje',      ownerId: '118972528' },
-        { name: 'Michael Cronin', ownerId: '84179396' },
-        { name: 'Charles Ramos',  ownerId: '90988586' },
-        { name: 'Drew Melendres', ownerId: '30458491' }
+        { name: 'Jay Fedje',      ownerId: '118972528', email: 'jay.fedje@degreesight.com' },
+        { name: 'Michael Cronin', ownerId: '84179396',  email: 'michael.cronin@degreesight.com' },
+        { name: 'Charles Ramos',  ownerId: '90988586',  email: 'charles.ramos@degreesight.com' },
+        { name: 'Drew Melendres', ownerId: '30458491',  email: 'drew.melendres@degreesight.com' }
       ];
       const now = new Date();
       const wk = (() => { const d = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate())); d.setUTCDate(d.getUTCDate() - ((d.getUTCDay() + 6) % 7)); return d.toISOString().slice(0, 10); })();
@@ -388,10 +530,8 @@ export default async function handler(req, res) {
       // inside DRIVE_FOLDER_ID; bundle.json + one PDF per dossier.
       const WEEK_FOLDER = w => `Week of ${w}`;
 
-      // --- plan: pick this week's top 25 targets, weighted toward STRONG intent ---
-      // Strong intent = RFP / Purchase / Meeting signals (score 3x); general
-      // hotness signals score 1x. Top 25 buyers by total intent score.
-      if (sub === 'plan') {
+      // Local helpers shared by the interactive subs AND the automatic cron
+      const runPlan = async () => {
         const STRONG_TYPES = new Set(['RFP', 'Purchase', 'Meeting']);
         const [hot, rfp, purchase, meeting] = await Promise.all([
           listTopRecentSignals({ pageSize: 100, sort: 'Hotness', relativeDatePeriodFrom: 'LastSevenDays' }),
@@ -423,16 +563,13 @@ export default async function handler(req, res) {
         const targets = Object.values(byBuyer)
           .sort((a, b) => b.intent_score - a.intent_score || b.signal_count - a.signal_count)
           .slice(0, 25);
-        return res.status(200).json({ week, targets, total_signals: all.length });
-      }
+        return { week, targets, total_signals: all.length };
+      };
 
-      // --- digests: one Claude digest per rep (minus Cody) ---
-      if (sub === 'digests') {
-        const body = req.body || {};
-        const dossierSummaries = Array.isArray(body.dossiers) ? body.dossiers : [];
+      const runDigests = async (dossierSummaries) => {
         const hsToken = process.env.HUBSPOT_TOKEN;
         const apiKey = process.env.ANTHROPIC_API_KEY;
-        if (!apiKey) return res.status(500).json({ error: 'ANTHROPIC_API_KEY not set' });
+        if (!apiKey) throw new Error('ANTHROPIC_API_KEY not set');
         const weekStartISO = `${week}T00:00:00Z`;
         const digests = {};
         for (const rep of WEEKLY_REPS) {
@@ -482,6 +619,18 @@ Return VALID JSON only:
           digests[rep.name].moved_deals = movedDeals.length;
           digests[rep.name].dossier_count = repDossiers.length;
         }
+        return digests;
+      };
+
+      // --- plan: pick this week's top 25 targets (strong intent 3x) ---
+      if (sub === 'plan') {
+        return res.status(200).json(await runPlan());
+      }
+
+      // --- digests: one Claude digest per rep (minus Cody) ---
+      if (sub === 'digests') {
+        const body = req.body || {};
+        const digests = await runDigests(Array.isArray(body.dossiers) ? body.dossiers : []);
         return res.status(200).json({ week, digests });
       }
 
@@ -549,6 +698,115 @@ Return VALID JSON only:
         });
         if (!r4.ok) return res.status(500).json({ error: `Slack webhook ${r4.status}: ${(await r4.text()).slice(0, 200)}` });
         return res.status(200).json({ ok: true });
+      }
+
+      // --- cron: fully automatic pipeline, self-chained to fit the 60s limit ---
+      // Each invocation does ONE unit of work (1 dossier+PDF, or digests, or save,
+      // or notify), persists state.json to the week's Drive folder, then triggers
+      // the next invocation. Kicked off weekly by Vercel Cron (CRON_SECRET auth).
+      if (sub === 'cron') {
+        const folderId = await ensureFolder(rootFolderId(), WEEK_FOLDER(week));
+        let state = null;
+        const sf = await findChild(folderId, 'state.json');
+        if (sf) { try { state = JSON.parse((await downloadFile(sf.id)).toString('utf8')); } catch {} }
+        if (!state || url.searchParams.get('restart') === '1') {
+          const plan = await runPlan();
+          state = { week, phase: 'dossiers', targets: plan.targets, dossiers: [], pdf_ok: 0, pdf_fail: 0, started_at: new Date().toISOString(), errors: [] };
+        }
+        if (state.phase === 'done') {
+          return res.status(200).json({ ok: true, phase: 'done', week, finished_at: state.finished_at });
+        }
+
+        const safeName = n => String(n || 'dossier').replace(/[\\/:*?"<>|]/g, '-').slice(0, 120);
+        try {
+          if (state.phase === 'dossiers') {
+            const idx = state.dossiers.length;
+            if (idx >= state.targets.length) {
+              state.phase = 'digests';
+            } else {
+              const t = state.targets[idx];
+              const d = await generateDossier(t.buyerId, t.name || '');
+              d._signal_count = t.signal_count; d._intent_score = t.intent_score; d._strong_signals = t.strong_signals;
+              state.dossiers.push(d);
+              try {
+                const pdf = await renderPdfBuffer(serverDossierHtml(d));
+                await uploadFile(folderId, `${safeName(d.school_name)}.pdf`, pdf, 'application/pdf');
+                state.pdf_ok++;
+              } catch (e) { state.pdf_fail++; state.errors.push(`pdf ${d.school_name}: ${e.message}`.slice(0, 200)); }
+              if (state.dossiers.length >= state.targets.length) state.phase = 'digests';
+            }
+          } else if (state.phase === 'digests') {
+            const summaries = state.dossiers.map(d2 => ({
+              school_name: d2.school_name, prepared_for: d2.prepared_for, deal_state: d2.deal_state,
+              skip_recommended: d2.skip_recommended, theme: d2.dossier?.theme || null, banner: d2.dossier?.banner_text || null
+            }));
+            state.digests = await runDigests(summaries);
+            state.phase = 'save';
+          } else if (state.phase === 'save') {
+            const bundle = {
+              week: state.week, targets: state.targets, dossiers: state.dossiers, digests: state.digests,
+              saved_at: new Date().toISOString(), saved_by: 'weekly-cron', folder_url: folderUrl(folderId)
+            };
+            await uploadFile(folderId, 'bundle.json', Buffer.from(JSON.stringify(bundle, null, 2)), 'application/json');
+            state.phase = 'notify';
+          } else if (state.phase === 'notify') {
+            const dashUrl = `https://${req.headers.host}/sales.html`;
+            const stripB = s => String(s || '').replace(/<\/?b>/g, '*').replace(/<[^>]+>/g, '');
+            state.dm_ok = 0; state.dm_fail = 0;
+            for (const rep of WEEKLY_REPS) {
+              const dg = (state.digests || {})[rep.name] || {};
+              const text =
+                `📂 *Weekly dossiers — week of ${state.week}*\n` +
+                (dg.headline ? `*${stripB(dg.headline)}*\n` : '') +
+                (dg.bullets || []).map(bt => `• ${stripB(bt)}`).join('\n') +
+                (dg.focus_account ? `\n🎯 First hour: *${stripB(dg.focus_account)}*` : '') +
+                `\n\n${state.pdf_ok} PDFs: ${folderUrl(folderId)}\nDashboard: ${dashUrl}`;
+              try { await slackDmByEmail(rep.email, text); state.dm_ok++; }
+              catch (e) { state.dm_fail++; state.errors.push(`slack ${rep.name}: ${e.message}`.slice(0, 200)); }
+            }
+            state.phase = 'done';
+            state.finished_at = new Date().toISOString();
+          }
+        } catch (e) {
+          state.errors.push(`${state.phase}: ${e.message}`.slice(0, 300));
+          state.retry = (state.retry || 0) + 1;
+          if (state.retry > 3) { state.phase = 'done'; state.finished_at = new Date().toISOString(); state.aborted = true; }
+        }
+
+        await uploadFile(folderId, 'state.json', Buffer.from(JSON.stringify(state)), 'application/json');
+
+        // Chain the next step (fire, wait long enough to guarantee dispatch, abort)
+        if (state.phase !== 'done') {
+          try {
+            const nextUrl = `https://${req.headers.host}/api/starbridge?action=weekly&sub=cron&week=${state.week}&secret=${encodeURIComponent(cronSecret || '')}`;
+            const ctrl = new AbortController();
+            const tm = setTimeout(() => ctrl.abort(), 2000);
+            await fetch(nextUrl, { signal: ctrl.signal }).catch(() => {});
+            clearTimeout(tm);
+          } catch {}
+        }
+        return res.status(200).json({
+          ok: true, phase: state.phase, week: state.week,
+          dossiers_done: state.dossiers.length, targets: (state.targets || []).length,
+          pdf_ok: state.pdf_ok, pdf_fail: state.pdf_fail, errors: state.errors.slice(-3)
+        });
+      }
+
+      // --- cron_status: progress of the automatic run (for the dashboard) ---
+      if (sub === 'cron_status') {
+        const folder = await findChild(rootFolderId(), WEEK_FOLDER(week), { folderOnly: true });
+        if (!folder) return res.status(200).json({ week, phase: 'not_started' });
+        const sf2 = await findChild(folder.id, 'state.json');
+        if (!sf2) return res.status(200).json({ week, phase: 'not_started' });
+        try {
+          const st = JSON.parse((await downloadFile(sf2.id)).toString('utf8'));
+          return res.status(200).json({
+            week, phase: st.phase, dossiers_done: (st.dossiers || []).length, targets: (st.targets || []).length,
+            pdf_ok: st.pdf_ok, pdf_fail: st.pdf_fail, dm_ok: st.dm_ok, dm_fail: st.dm_fail,
+            started_at: st.started_at, finished_at: st.finished_at, errors: (st.errors || []).slice(-5),
+            folder_url: folderUrl(folder.id)
+          });
+        } catch { return res.status(200).json({ week, phase: 'unknown' }); }
       }
 
       return res.status(400).json({ error: `unknown weekly sub: ${sub}` });
