@@ -785,6 +785,24 @@ Return VALID JSON only:
         return res.status(200).json({ ok: true });
       }
 
+      // --- drive_check: diagnose service-account identity + folder access ---
+      if (sub === 'drive_check') {
+        const out = {
+          sa_email_env: (process.env.GOOGLE_SA_EMAIL || '').trim() || null,
+          folder_id_env: (process.env.DRIVE_FOLDER_ID || '').trim() || null,
+          key_present: !!process.env.GOOGLE_SA_PRIVATE_KEY
+        };
+        try {
+          const r5 = await driveFetch('/about?fields=user');
+          out.token_identity = (await r5.json()).user?.emailAddress || null;
+        } catch (e) { out.token_error = e.message.slice(0, 300); }
+        try {
+          const r6 = await driveFetch(`/files/${rootFolderId()}?fields=id,name,owners(emailAddress),capabilities(canAddChildren)&supportsAllDrives=true`);
+          out.folder = await r6.json();
+        } catch (e) { out.folder_error = e.message.slice(0, 300); }
+        return res.status(200).json(out);
+      }
+
       // --- cron: fully automatic pipeline, self-chained to fit the 60s limit ---
       // Each invocation does ONE unit of work (1 dossier+PDF, or digests, or save,
       // or notify), persists state.json to the week's Drive folder, then triggers
