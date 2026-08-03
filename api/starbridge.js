@@ -810,11 +810,13 @@ Return VALID JSON only:
       if (sub === 'cron') {
         const folderId = await ensureFolder(rootFolderId(), WEEK_FOLDER(week));
         let state = null;
+        let freshPlan = false;
         const sf = await findChild(folderId, 'state.json');
         if (sf) { try { state = JSON.parse((await downloadFile(sf.id)).toString('utf8')); } catch {} }
         if (!state || url.searchParams.get('restart') === '1') {
           const plan = await runPlan();
           state = { week, phase: 'dossiers', targets: plan.targets, dossiers: [], pdf_ok: 0, pdf_fail: 0, started_at: new Date().toISOString(), errors: [] };
+          freshPlan = true; // save state + chain immediately; heavy work starts on the next link
         }
         if (state.phase === 'done') {
           return res.status(200).json({ ok: true, phase: 'done', week, finished_at: state.finished_at });
@@ -822,7 +824,9 @@ Return VALID JSON only:
 
         const safeName = n => String(n || 'dossier').replace(/[\\/:*?"<>|]/g, '-').slice(0, 120);
         try {
-          if (state.phase === 'dossiers') {
+          if (freshPlan) {
+            // no-op this invocation: persist the plan and hand off to the chain
+          } else if (state.phase === 'dossiers') {
             const idx = state.dossiers.length;
             if (idx >= state.targets.length) {
               state.phase = 'digests';
