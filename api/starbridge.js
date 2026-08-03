@@ -114,6 +114,34 @@ async function downloadFile(fileId) {
 function folderUrl(folderId) { return `https://drive.google.com/drive/folders/${folderId}`; }
 // ---------- end Google Drive client ----------
 
+// ---------- Vercel Blob storage (weekly pipeline) ----------
+// Blob is the system of record for the weekly pipeline (BLOB_READ_WRITE_TOKEN
+// already configured for lead-scoring). Google Drive is a MIRROR, populated by
+// an n8n workflow acting as Daniel (user OAuth) — service accounts cannot
+// create files in My Drive folders.
+import { put as blobPutRaw, list as blobListRaw } from '@vercel/blob';
+
+async function blobPut(pathname, buf, contentType) {
+  return blobPutRaw(pathname, buf, {
+    access: 'public', addRandomSuffix: false, allowOverwrite: true,
+    contentType, cacheControlMaxAge: 60
+  });
+}
+async function blobFind(pathname) {
+  const { blobs } = await blobListRaw({ prefix: pathname, limit: 10 });
+  return blobs.find(b => b.pathname === pathname) || null;
+}
+async function blobReadJson(pathname) {
+  const b = await blobFind(pathname);
+  if (!b) return null;
+  try {
+    const r = await fetch(`${b.url}?ts=${Date.now()}`, { cache: 'no-store' });
+    if (!r.ok) return null;
+    return await r.json();
+  } catch { return null; }
+}
+const DRIVE_FOLDER_LINK = process.env.DRIVE_FOLDER_URL || 'https://drive.google.com/drive/folders/1Cz6Ln3XB3v7xhAE45jfaqjuXMB8ZZVle';
+
 // ---------- HubSpot helpers (dossier) ----------
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 async function hsSearch(hsToken, obj, body, attempt = 0) {
@@ -719,51 +747,43 @@ Return VALID JSON only:
         return res.status(200).json({ week, digests });
       }
 
-      // --- save: persist the weekly bundle (JSON) to the week's Drive folder ---
+      // --- save: persist the weekly bundle (JSON) to Blob ---
       if (sub === 'save') {
         const bundle = req.body || {};
         if (!bundle.week) bundle.week = week;
         bundle.saved_at = new Date().toISOString();
         bundle.saved_by = user.email;
-        const folderId = await ensureFolder(rootFolderId(), WEEK_FOLDER(bundle.week));
-        await uploadFile(folderId, 'bundle.json', Buffer.from(JSON.stringify(bundle, null, 2)), 'application/json');
-        return res.status(200).json({ ok: true, week: bundle.week, folder_id: folderId, folder_url: folderUrl(folderId) });
+        await blobPut(`weekly/${bundle.week}/bundle.json`, Buffer.from(JSON.stringify(bundle)), 'application/json');
+        return res.status(200).json({ ok: true, week: bundle.week, folder_url: DRIVE_FOLDER_LINK });
       }
 
-      // --- pdf: upload one dossier PDF (base64) into the week's folder ---
+      // --- pdf: store one dossier PDF (base64) in Blob ---
       if (sub === 'pdf') {
         const b = req.body || {};
         if (!b.pdf_base64 || !b.school_name) return res.status(400).json({ error: 'school_name and pdf_base64 required' });
         const w2 = b.week || week;
-        const folderId = await ensureFolder(rootFolderId(), WEEK_FOLDER(w2));
-        const safeName = String(b.school_name).replace(/[\\/:*?"<>|]/g, '-').slice(0, 120);
+        const safeName = String(b.school_name).replace(/[\\/:*?"<>|#]/g, '-').slice(0, 120);
         const buf = Buffer.from(b.pdf_base64, 'base64');
         if (buf.length > 4 * 1024 * 1024) return res.status(413).json({ error: 'PDF too large (>4MB)' });
-        const up = await uploadFile(folderId, `${safeName}.pdf`, buf, 'application/pdf');
-        return res.status(200).json({ ok: true, file_id: up.id, url: up.webViewLink || null });
+        const up = await blobPut(`weekly/${w2}/pdf/${safeName}.pdf`, buf, 'application/pdf');
+        return res.status(200).json({ ok: true, url: up.url });
       }
 
-      // --- list: saved weeks (Drive subfolders) ---
+      // --- list: saved weeks (Blob bundles) ---
       if (sub === 'list') {
-        const folders = await listFolders(rootFolderId());
-        const weeks = folders
-          .filter(f => (f.name || '').startsWith('Week of '))
-          .map(f => ({ week: f.name.replace('Week of ', ''), folder_id: f.id, folder_url: folderUrl(f.id), updated_at: f.modifiedTime }))
+        const { blobs } = await blobListRaw({ prefix: 'weekly/', limit: 500 });
+        const weeks = blobs
+          .filter(b => b.pathname.endsWith('/bundle.json'))
+          .map(b => ({ week: b.pathname.split('/')[1], updated_at: b.uploadedAt, folder_url: DRIVE_FOLDER_LINK }))
           .sort((a, b) => b.week.localeCompare(a.week));
         return res.status(200).json({ weeks });
       }
 
       // --- get: load one saved week's bundle.json ---
       if (sub === 'get') {
-        const folder = await findChild(rootFolderId(), WEEK_FOLDER(week), { folderOnly: true });
-        if (!folder) return res.status(404).json({ error: `No saved folder for week ${week}` });
-        const file = await findChild(folder.id, 'bundle.json');
-        if (!file) return res.status(404).json({ error: 'Folder exists but bundle.json is missing' });
-        const buf = await downloadFile(file.id);
-        let bundle;
-        try { bundle = JSON.parse(buf.toString('utf8')); }
-        catch { return res.status(500).json({ error: 'bundle.json could not be parsed' }); }
-        return res.status(200).json({ week, bundle, folder_url: folderUrl(folder.id) });
+        const bundle = await blobReadJson(`weekly/${week}/bundle.json`);
+        if (!bundle) return res.status(404).json({ error: `No saved bundle for week ${week}` });
+        return res.status(200).json({ week, bundle, folder_url: DRIVE_FOLDER_LINK });
       }
 
       // --- notify: Slack webhook to the team (reps minus Cody) ---
@@ -805,27 +825,42 @@ Return VALID JSON only:
 
       // --- cron: fully automatic pipeline, self-chained to fit the 60s limit ---
       // Each invocation does ONE unit of work (1 dossier+PDF, or digests, or save,
-      // or notify), persists state.json to the week's Drive folder, then triggers
-      // the next invocation. Kicked off weekly by Vercel Cron (CRON_SECRET auth).
+      // or notify). The full state travels IN THE BODY of the next chained POST
+      // (no mid-chain storage reads → no cache races); a snapshot is written to
+      // Blob after every link so cron_status can report progress. Kicked off
+      // weekly by Vercel Cron (CRON_SECRET auth), which sends a bare GET.
       if (sub === 'cron') {
-        const folderId = await ensureFolder(rootFolderId(), WEEK_FOLDER(week));
-        let state = null;
+        let state = (req.method === 'POST' && req.body && req.body.week) ? req.body : null;
         let freshPlan = false;
-        const sf = await findChild(folderId, 'state.json');
-        if (sf) { try { state = JSON.parse((await downloadFile(sf.id)).toString('utf8')); } catch {} }
-        if (!state || url.searchParams.get('restart') === '1') {
-          const plan = await runPlan();
-          state = { week, phase: 'dossiers', targets: plan.targets, dossiers: [], pdf_ok: 0, pdf_fail: 0, started_at: new Date().toISOString(), errors: [] };
-          freshPlan = true; // save state + chain immediately; heavy work starts on the next link
+        if (!state) {
+          // Fresh start (Vercel Cron or manual GET). If this week already
+          // finished, don't re-run — return done (idempotent Mondays).
+          if (url.searchParams.get('restart') !== '1') {
+            const existing = await blobReadJson(`weekly/${week}/state.json`);
+            if (existing && existing.phase === 'done') {
+              return res.status(200).json({ ok: true, phase: 'done', week, finished_at: existing.finished_at });
+            }
+            if (existing && existing.phase && existing.phase !== 'done') {
+              state = existing; // resume a broken chain from the last snapshot
+            }
+          }
+          if (!state) {
+            const plan = await runPlan();
+            state = { week, phase: 'dossiers', targets: plan.targets, dossiers: [], pdfs: [], pdf_ok: 0, pdf_fail: 0, started_at: new Date().toISOString(), errors: [] };
+            freshPlan = true; // hand off; heavy work starts on the next link
+          }
         }
         if (state.phase === 'done') {
-          return res.status(200).json({ ok: true, phase: 'done', week, finished_at: state.finished_at });
+          return res.status(200).json({ ok: true, phase: 'done', week: state.week, finished_at: state.finished_at });
         }
+        state.pdfs = state.pdfs || [];
+        state.errors = state.errors || [];
+        state.dossiers = state.dossiers || [];
 
-        const safeName = n => String(n || 'dossier').replace(/[\\/:*?"<>|]/g, '-').slice(0, 120);
+        const safeName = n => String(n || 'dossier').replace(/[\\/:*?"<>|#]/g, '-').slice(0, 120);
         try {
           if (freshPlan) {
-            // no-op this invocation: persist the plan and hand off to the chain
+            // no-op this invocation: snapshot the plan and hand off to the chain
           } else if (state.phase === 'dossiers') {
             const idx = state.dossiers.length;
             if (idx >= state.targets.length) {
@@ -837,7 +872,8 @@ Return VALID JSON only:
               state.dossiers.push(d);
               try {
                 const pdf = await renderPdfBuffer(serverDossierHtml(d));
-                await uploadFile(folderId, `${safeName(d.school_name)}.pdf`, pdf, 'application/pdf');
+                const up = await blobPut(`weekly/${state.week}/pdf/${safeName(d.school_name)}.pdf`, pdf, 'application/pdf');
+                state.pdfs.push({ school: d.school_name, url: up.url, prepared_for: d.prepared_for || null });
                 state.pdf_ok++;
               } catch (e) { state.pdf_fail++; state.errors.push(`pdf ${d.school_name}: ${e.message}`.slice(0, 200)); }
               if (state.dossiers.length >= state.targets.length) state.phase = 'digests';
@@ -852,22 +888,37 @@ Return VALID JSON only:
           } else if (state.phase === 'save') {
             const bundle = {
               week: state.week, targets: state.targets, dossiers: state.dossiers, digests: state.digests,
-              saved_at: new Date().toISOString(), saved_by: 'weekly-cron', folder_url: folderUrl(folderId)
+              pdfs: state.pdfs, saved_at: new Date().toISOString(), saved_by: 'weekly-cron', folder_url: DRIVE_FOLDER_LINK
             };
-            await uploadFile(folderId, 'bundle.json', Buffer.from(JSON.stringify(bundle, null, 2)), 'application/json');
+            await blobPut(`weekly/${state.week}/bundle.json`, Buffer.from(JSON.stringify(bundle)), 'application/json');
             state.phase = 'notify';
           } else if (state.phase === 'notify') {
+            // 1) Mirror to Google Drive via n8n (acts as Daniel's user OAuth)
+            const n8nHook = process.env.N8N_WEEKLY_WEBHOOK_URL;
+            if (n8nHook) {
+              try {
+                const nr = await fetch(n8nHook, {
+                  method: 'POST', headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({ week: state.week, pdfs: state.pdfs, drive_folder: DRIVE_FOLDER_LINK })
+                });
+                state.n8n_mirror = nr.ok ? 'sent' : `HTTP ${nr.status}`;
+              } catch (e) { state.n8n_mirror = `error: ${e.message}`.slice(0, 150); }
+            } else state.n8n_mirror = 'skipped (N8N_WEEKLY_WEBHOOK_URL not set)';
+
+            // 2) Slack DMs per rep
             const dashUrl = `https://${req.headers.host}/sales.html`;
             const stripB = s => String(s || '').replace(/<\/?b>/g, '*').replace(/<[^>]+>/g, '');
             state.dm_ok = 0; state.dm_fail = 0;
             for (const rep of WEEKLY_REPS) {
               const dg = (state.digests || {})[rep.name] || {};
+              const repPdfs = (state.pdfs || []).filter(p => p.prepared_for === rep.name).slice(0, 5);
               const text =
                 `📂 *Weekly dossiers — week of ${state.week}*\n` +
                 (dg.headline ? `*${stripB(dg.headline)}*\n` : '') +
                 (dg.bullets || []).map(bt => `• ${stripB(bt)}`).join('\n') +
                 (dg.focus_account ? `\n🎯 First hour: *${stripB(dg.focus_account)}*` : '') +
-                `\n\n${state.pdf_ok} PDFs: ${folderUrl(folderId)}\nDashboard: ${dashUrl}`;
+                (repPdfs.length ? `\n\nYour dossiers:\n${repPdfs.map(p => `• <${p.url}|${p.school}>`).join('\n')}` : '') +
+                `\n\nAll ${state.pdf_ok} PDFs: ${DRIVE_FOLDER_LINK}\nDashboard: ${dashUrl}`;
               try { await slackDmByEmail(rep.email, text); state.dm_ok++; }
               catch (e) { state.dm_fail++; state.errors.push(`slack ${rep.name}: ${e.message}`.slice(0, 200)); }
             }
@@ -880,15 +931,21 @@ Return VALID JSON only:
           if (state.retry > 3) { state.phase = 'done'; state.finished_at = new Date().toISOString(); state.aborted = true; }
         }
 
-        await uploadFile(folderId, 'state.json', Buffer.from(JSON.stringify(state)), 'application/json');
+        // Snapshot for cron_status (best effort)
+        try { await blobPut(`weekly/${state.week}/state.json`, Buffer.from(JSON.stringify(state)), 'application/json'); }
+        catch (e) { console.error('[weekly snapshot]', e.message); }
 
-        // Chain the next step (fire, wait long enough to guarantee dispatch, abort)
+        // Chain the next step: POST the full state; wait long enough to
+        // guarantee dispatch, then abort (the next invocation keeps running).
         if (state.phase !== 'done') {
           try {
             const nextUrl = `https://${req.headers.host}/api/starbridge?action=weekly&sub=cron&week=${state.week}&secret=${encodeURIComponent(cronSecret || '')}`;
             const ctrl = new AbortController();
-            const tm = setTimeout(() => ctrl.abort(), 2000);
-            await fetch(nextUrl, { signal: ctrl.signal }).catch(() => {});
+            const tm = setTimeout(() => ctrl.abort(), 2500);
+            await fetch(nextUrl, {
+              method: 'POST', headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify(state), signal: ctrl.signal
+            }).catch(() => {});
             clearTimeout(tm);
           } catch {}
         }
@@ -901,19 +958,14 @@ Return VALID JSON only:
 
       // --- cron_status: progress of the automatic run (for the dashboard) ---
       if (sub === 'cron_status') {
-        const folder = await findChild(rootFolderId(), WEEK_FOLDER(week), { folderOnly: true });
-        if (!folder) return res.status(200).json({ week, phase: 'not_started' });
-        const sf2 = await findChild(folder.id, 'state.json');
-        if (!sf2) return res.status(200).json({ week, phase: 'not_started' });
-        try {
-          const st = JSON.parse((await downloadFile(sf2.id)).toString('utf8'));
-          return res.status(200).json({
-            week, phase: st.phase, dossiers_done: (st.dossiers || []).length, targets: (st.targets || []).length,
-            pdf_ok: st.pdf_ok, pdf_fail: st.pdf_fail, dm_ok: st.dm_ok, dm_fail: st.dm_fail,
-            started_at: st.started_at, finished_at: st.finished_at, errors: (st.errors || []).slice(-5),
-            folder_url: folderUrl(folder.id)
-          });
-        } catch { return res.status(200).json({ week, phase: 'unknown' }); }
+        const st = await blobReadJson(`weekly/${week}/state.json`);
+        if (!st) return res.status(200).json({ week, phase: 'not_started' });
+        return res.status(200).json({
+          week, phase: st.phase, dossiers_done: (st.dossiers || []).length, targets: (st.targets || []).length,
+          pdf_ok: st.pdf_ok, pdf_fail: st.pdf_fail, dm_ok: st.dm_ok, dm_fail: st.dm_fail, n8n_mirror: st.n8n_mirror,
+          started_at: st.started_at, finished_at: st.finished_at, errors: (st.errors || []).slice(-5),
+          folder_url: DRIVE_FOLDER_LINK
+        });
       }
 
       return res.status(400).json({ error: `unknown weekly sub: ${sub}` });
