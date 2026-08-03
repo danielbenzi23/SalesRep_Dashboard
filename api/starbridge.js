@@ -461,7 +461,15 @@ export default async function handler(req, res) {
   if (!user) return res.status(401).json({ error: 'Not authenticated' });
 
   const url = new URL(req.url, `http://${req.headers.host || 'x'}`);
-  const action = url.searchParams.get('action') || 'signals';
+  let action = url.searchParams.get('action') || 'signals';
+  let cronSubOverride = null;
+  // Vercel Cron cannot carry query params in the path — it hits /api/starbridge
+  // bare, authenticated with CRON_SECRET and tagged with x-vercel-cron-schedule.
+  // Route those invocations straight into the weekly pipeline.
+  if (!url.searchParams.get('action') && (req.headers['x-vercel-cron-schedule'] || isCron)) {
+    action = 'weekly';
+    cronSubOverride = 'cron';
+  }
 
   try {
     // ===== SEARCH =====
@@ -591,7 +599,7 @@ Return VALID JSON only: {"subject": "...", "body": "..."}`;
 
     // ===== WEEKLY: weekly dossier batch + per-rep digests (saved to Confluence) =====
     if (action === 'weekly') {
-      const sub = url.searchParams.get('sub') || 'plan';
+      const sub = cronSubOverride || url.searchParams.get('sub') || 'plan';
       // Reps in the weekly loop. Cody intentionally excluded (routing rules: his
       // net-new accounts flow to Charles).
       const WEEKLY_REPS = [
