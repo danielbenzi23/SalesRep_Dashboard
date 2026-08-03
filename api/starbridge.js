@@ -11,7 +11,8 @@ import {
   searchBuyers,
   getBuyerSummary,
   listRecentBuyerSignals,
-  getBuyerAttributes
+  getBuyerAttributes,
+  getBuyerAttribute
 } from '../lib/starbridge.js';
 
 export const config = { maxDuration: 60 };
@@ -380,6 +381,16 @@ async function slackDmByEmail(email, text) {
 // interactive ?action=dossier route and the automatic weekly cron.
 async function generateDossier(buyerId, buyerName) {
   const hsToken = process.env.HUBSPOT_TOKEN;
+  // Resolve the REAL institution name from the buyer record — signal feeds
+  // often carry meeting/contract titles instead of the school name.
+  let resolvedName = buyerName;
+  try {
+    const nameAttr = await getBuyerAttribute(buyerId, 'Name');
+    const n = nameAttr?.buyerData;
+    if (typeof n === 'string' && n.trim().length > 2) resolvedName = n.trim();
+  } catch {}
+  buyerName = resolvedName;
+
   const [summaryRes, signalsRes, attributesRes, hubspotRes] = await Promise.allSettled([
     getBuyerSummary(buyerId),
     listRecentBuyerSignals(buyerId, { pageSize: 15 }),
