@@ -491,7 +491,13 @@ export default async function handler(req, res) {
   const cronSecret = process.env.CRON_SECRET;
   const authHdr = req.headers.authorization || '';
   const urlSecret = new URL(req.url, 'http://x').searchParams.get('secret');
-  const isCron = !!cronSecret && (authHdr === `Bearer ${cronSecret}` || urlSecret === cronSecret);
+  // Chain secret derived from DASHBOARD_TOKEN — no extra env needed for the
+  // self-chained invocations of the weekly pipeline.
+  const chainSecret = crypto.createHmac('sha256', token).update('weekly-chain').digest('hex');
+  const isCron =
+    (!!cronSecret && (authHdr === `Bearer ${cronSecret}` || urlSecret === cronSecret)) ||
+    urlSecret === chainSecret ||
+    !!req.headers['x-vercel-cron-schedule'];
   if (!user && isCron) user = { email: 'cron@degreesight.com', role: 'system' };
   if (!user) return res.status(401).json({ error: 'Not authenticated' });
 
@@ -1019,7 +1025,7 @@ Return VALID JSON only: {"hooks": {"<school>": "<hook>"}}`;
         // guarantee dispatch, then abort (the next invocation keeps running).
         if (state.phase !== 'done') {
           try {
-            const nextUrl = `https://${req.headers.host}/api/starbridge?action=weekly&sub=cron&week=${state.week}&secret=${encodeURIComponent(cronSecret || '')}`;
+            const nextUrl = `https://${req.headers.host}/api/starbridge?action=weekly&sub=cron&week=${state.week}&secret=${chainSecret}`;
             const ctrl = new AbortController();
             const tm = setTimeout(() => ctrl.abort(), 2500);
             await fetch(nextUrl, {
