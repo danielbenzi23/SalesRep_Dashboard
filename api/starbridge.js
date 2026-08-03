@@ -335,6 +335,12 @@ function serverDossierHtml(d) {
 // Headless-Chrome PDF (puppeteer-core + @sparticuz/chromium). Dynamic import so
 // interactive requests never pay the cold-start cost.
 async function renderPdfBuffer(html) {
+  // @sparticuz/chromium only extracts its bundled shared libraries (libnss3 etc.)
+  // and sets LD_LIBRARY_PATH when it believes it is inside AWS Lambda. Vercel's
+  // runtime hides those env vars — spoof them BEFORE importing the package.
+  if (!process.env.AWS_EXECUTION_ENV) process.env.AWS_EXECUTION_ENV = 'AWS_Lambda_nodejs22.x';
+  if (!process.env.AWS_LAMBDA_JS_RUNTIME) process.env.AWS_LAMBDA_JS_RUNTIME = 'nodejs22.x';
+  if (!process.env.AWS_LAMBDA_FUNCTION_NAME) process.env.AWS_LAMBDA_FUNCTION_NAME = 'vercel-fn';
   const [{ default: chromium }, { default: puppeteer }] = await Promise.all([
     import('@sparticuz/chromium'),
     import('puppeteer-core')
