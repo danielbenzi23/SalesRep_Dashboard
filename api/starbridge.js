@@ -119,13 +119,20 @@ function folderUrl(folderId) { return `https://drive.google.com/drive/folders/${
 // already configured for lead-scoring). Google Drive is a MIRROR, populated by
 // an n8n workflow acting as Daniel (user OAuth) — service accounts cannot
 // create files in My Drive folders.
-import { put as blobPutRaw, list as blobListRaw } from '@vercel/blob';
+import { put as blobPutRaw, list as blobListRawSdk } from '@vercel/blob';
+
+// Weekly pipeline uses the PUBLIC store (sales-weekly-public) via its own
+// token env — the default BLOB_READ_WRITE_TOKEN points at the private store.
+const WEEKLY_BLOB_TOKEN = () => process.env.WEEKLYBLOB_READ_WRITE_TOKEN || process.env.BLOB_READ_WRITE_TOKEN;
 
 async function blobPut(pathname, buf, contentType) {
   return blobPutRaw(pathname, buf, {
     access: 'public', addRandomSuffix: false, allowOverwrite: true,
-    contentType, cacheControlMaxAge: 60
+    contentType, cacheControlMaxAge: 60, token: WEEKLY_BLOB_TOKEN()
   });
+}
+async function blobListRaw(opts) {
+  return blobListRawSdk({ ...opts, token: WEEKLY_BLOB_TOKEN() });
 }
 async function blobFind(pathname) {
   const { blobs } = await blobListRaw({ prefix: pathname, limit: 10 });
