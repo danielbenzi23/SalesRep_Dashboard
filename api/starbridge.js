@@ -1062,6 +1062,45 @@ Return VALID JSON only: {"hooks": {"<school>": "<hook>"}}`;
         });
       }
 
+      // --- resend: rebuild + resend the Slack message from the SAVED bundle ---
+      // (no regeneration — use after fixing Slack credentials)
+      if (sub === 'resend') {
+        const bundle = await blobReadJson(`weekly/${week}/bundle.json`);
+        if (!bundle) return res.status(404).json({ error: `No saved bundle for week ${week}` });
+        const score5 = t3 => (t3?.strong_signals >= 2 || t3?.intent_score >= 9) ? 5 : (t3?.strong_signals >= 1 || t3?.intent_score >= 5) ? 4 : 3;
+        const stateOf = d3 => { const m2 = String(d3.dossier?.context_line || '').match(/\b([A-Z]{2})\s*$/); return m2 ? m2[1] : null; };
+        const repMention = name => { const r5 = WEEKLY_REPS.find(x => x.name === name); return r5 ? `<@${r5.slackId}>` : (name || 'Unassigned'); };
+        const rows2 = (bundle.dossiers || [])
+          .map(d3 => ({ d: d3, t: (bundle.targets || []).find(t3 => t3.buyerId === d3.buyerId) || {}, p: (bundle.pdfs || []).find(p2 => p2.school === d3.school_name) }))
+          .sort((a, b) => (b.t.intent_score || 0) - (a.t.intent_score || 0));
+        const lines = rows2.map((r6, i) => {
+          const st = stateOf(r6.d);
+          const hook = (bundle.hooks || {})[r6.d.school_name] || String(r6.d.dossier?.banner_text || '').replace(/<[^>]+>/g, '').slice(0, 140);
+          const bridge = r6.t.top_signal?.bridge || r6.t.top_signal?.type || 'signals';
+          const link = r6.p ? `<${r6.p.url}|Dossier>` : 'PDF pending';
+          return `${i + 1}. ${r6.d.school_name}${st ? ` (${st})` : ''} | ${score5(r6.t)}/5 | ${hook} | ${bridge} | ${repMention(r6.d.prepared_for)} | ${link}`;
+        });
+        const notes = [];
+        if ((bundle.skipped_recent || []).length) notes.push(`${bundle.skipped_recent.join(', ')} re-surfaced but were dossiered within the last 90 days, so they were skipped.`);
+        if (!bundle.rfp_count) notes.push('No new RFP/RFI signals came out of the bridges this week.');
+        const channelMsg =
+          `Here are the top ${rows2.length} leads this week with full dossiers.\n\n` +
+          lines.join('\n') +
+          (notes.length ? `\n\nNotes: ${notes.join(' ')}` : '') +
+          `\n\nAll PDFs: ${DRIVE_FOLDER_LINK}`;
+        const testEmail = process.env.SLACK_TEST_EMAIL;
+        try {
+          if (testEmail) {
+            await slackDmByEmail(testEmail, `🧪 *[TEST — would post to ${process.env.SLACK_SALES_CHANNEL || '#team-sales'}]*\n` + channelMsg);
+          } else {
+            await slackApi('chat.postMessage', { channel: process.env.SLACK_SALES_CHANNEL || '#team-sales', text: channelMsg, unfurl_links: false });
+          }
+          return res.status(200).json({ ok: true, sent_to: testEmail ? `DM ${testEmail} (test mode)` : (process.env.SLACK_SALES_CHANNEL || '#team-sales'), lines: rows2.length });
+        } catch (e) {
+          return res.status(502).json({ error: `Slack: ${e.message}` });
+        }
+      }
+
       // --- cron_status: progress of the automatic run (for the dashboard) ---
       if (sub === 'cron_status') {
         const st = await blobReadJson(`weekly/${week}/state.json`);
