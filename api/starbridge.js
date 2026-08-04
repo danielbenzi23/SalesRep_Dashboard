@@ -365,10 +365,14 @@ async function renderPdfBuffer(html) {
 async function slackApi(method, payload) {
   const token = process.env.SLACK_BOT_TOKEN;
   if (!token) throw new Error('SLACK_BOT_TOKEN not set');
+  // Slack read/lookup methods (users.lookupByEmail etc.) reject JSON bodies —
+  // form-encoding works for every method we use.
+  const form = new URLSearchParams();
+  for (const [k, v] of Object.entries(payload || {})) form.set(k, typeof v === 'string' ? v : JSON.stringify(v));
   const r = await fetch(`https://slack.com/api/${method}`, {
     method: 'POST',
-    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json; charset=utf-8' },
-    body: JSON.stringify(payload)
+    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: form.toString()
   });
   const j = await r.json();
   if (!j.ok) throw new Error(`Slack ${method}: ${j.error}`);
