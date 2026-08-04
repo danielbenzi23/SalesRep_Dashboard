@@ -1044,7 +1044,10 @@ Return VALID JSON only: {"hooks": {"<school>": "<hook>"}}`;
           try {
             const nextUrl = `https://${req.headers.host}/api/starbridge?action=weekly&sub=cron&week=${state.week}&secret=${chainSecret}`;
             const ctrl = new AbortController();
-            const tm = setTimeout(() => ctrl.abort(), 2500);
+            // Wait long enough to GUARANTEE the next invocation has received the
+            // request and started executing (TLS + body + cold start), then abort
+            // our side — the downstream function keeps running on its own.
+            const tm = setTimeout(() => ctrl.abort(), 10000);
             await fetch(nextUrl, {
               method: 'POST', headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify(state), signal: ctrl.signal
