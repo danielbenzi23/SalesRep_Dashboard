@@ -338,6 +338,101 @@ export default async function handler(req, res) {
     return todayAiHandler({ hsToken, ownerId, ownerName: nm, annualQuota: q, res });
   }
 
+  // ===== FORM SUBMISSIONS TRACKER =====
+  // Mirrors the "form submissions" Google Sheet: every contact with a recent
+  // conversion (website form or meeting link), whether sales has contacted them
+  // since, and how long it took. Sorted newest first.
+  if (urlObj.searchParams.get('action') === 'form_submissions') {
+    try {
+      const days = Math.min(365, parseInt(urlObj.searchParams.get('days') || '90', 10) || 90);
+      const since = new Date(Date.now() - days * 86400000).toISOString();
+      const props = [
+        'firstname', 'lastname', 'email', 'phone', 'company', 'jobtitle',
+        'recent_conversion_event_name', 'recent_conversion_date',
+        'first_conversion_event_name', 'first_conversion_date',
+        'num_conversion_events', 'num_contacted_notes', 'notes_last_contacted',
+        'hubspot_owner_id', 'hs_lead_status', 'lifecyclestage', 'hs_analytics_source'
+      ];
+      const contacts = await fetchAll(hsToken, 'contacts', [
+        { propertyName: 'recent_conversion_date', operator: 'GTE', value: since }
+      ], props, [{ propertyName: 'recent_conversion_date', direction: 'DESCENDING' }], 3);
+
+      // Owner id → name (covers reps AND non-rep owners like SDRs/CS)
+      const ownerNames = { ...OWNER_ID_TO_NAME };
+      try {
+        let after2 = null;
+        for (let p2 = 0; p2 < 3; p2++) {
+          const or = await fetch(`https://api.hubapi.com/crm/v3/owners/?limit=100${after2 ? `&after=${after2}` : ''}`, {
+            headers: { Authorization: `Bearer ${hsToken}` }
+          });
+          if (!or.ok) break;
+          const oj = await or.json();
+          for (const o of (oj.results || [])) {
+            ownerNames[o.id] = [o.firstName, o.lastName].filter(Boolean).join(' ') || o.email || o.id;
+          }
+          after2 = oj.paging?.next?.after || null;
+          if (!after2) break;
+        }
+      } catch {}
+
+      const SOURCE_LABELS = {
+        ORGANIC_SEARCH: 'Organic Search', PAID_SEARCH: 'Paid Search', EMAIL_MARKETING: 'Email Marketing',
+        SOCIAL_MEDIA: 'Organic Social', PAID_SOCIAL: 'Paid Social', REFERRALS: 'Referrals',
+        OTHER_CAMPAIGNS: 'Other Campaigns', DIRECT_TRAFFIC: 'Direct Traffic', OFFLINE: 'Offline Sources',
+        AI_REFERRALS: 'AI Referrals'
+      };
+
+      const rows = contacts.map(c => {
+        const p = c.properties;
+        const submittedAt = p.recent_conversion_date || null;
+        const lastContacted = p.notes_last_contacted || null;
+        const subMs = submittedAt ? Date.parse(submittedAt) : null;
+        const lcMs = lastContacted ? Date.parse(lastContacted) : null;
+        const contacted = !!(subMs && lcMs && lcMs >= subMs);
+        const daysToContact = contacted ? Math.round((lcMs - subMs) / 86400000) : null;
+        const daysSinceSubmission = subMs ? Math.round((Date.now() - subMs) / 86400000) : null;
+        const daysSinceLastContact = lcMs ? Math.round((Date.now() - lcMs) / 86400000) : null;
+        const formName = p.recent_conversion_event_name || '';
+        return {
+          id: c.id,
+          name: [p.firstname, p.lastname].filter(Boolean).join(' ') || p.email || '(no name)',
+          email: p.email || null,
+          phone: p.phone || null,
+          company: p.company || null,
+          jobtitle: p.jobtitle || null,
+          submission_type: /^Meetings Link:/i.test(formName) ? 'Meeting link booking' : 'Website form',
+          form_name: formName || null,
+          submitted_at: submittedAt,
+          contacted,
+          last_contacted: lastContacted,
+          days_to_contact: daysToContact,
+          days_since_submission: daysSinceSubmission,
+          days_since_last_contact: daysSinceLastContact,
+          times_contacted: parseInt(p.num_contacted_notes || 0, 10) || 0,
+          total_submissions: parseInt(p.num_conversion_events || 0, 10) || 0,
+          first_conversion: p.first_conversion_event_name || null,
+          first_conversion_date: p.first_conversion_date || null,
+          owner_id: p.hubspot_owner_id || null,
+          owner: ownerNames[p.hubspot_owner_id] || (p.hubspot_owner_id ? `Owner ${p.hubspot_owner_id}` : null),
+          lead_status: p.hs_lead_status || null,
+          lifecyclestage: p.lifecyclestage || null,
+          source: SOURCE_LABELS[p.hs_analytics_source] || p.hs_analytics_source || null,
+          hubspot_url: `https://app.hubspot.com/contacts/2675906/record/0-1/${c.id}`
+        };
+      });
+
+      const missed = rows.filter(r2 => !r2.contacted).length;
+      const respTimes = rows.filter(r2 => r2.days_to_contact != null).map(r2 => r2.days_to_contact).sort((a, b) => a - b);
+      const medianResponse = respTimes.length ? respTimes[Math.floor(respTimes.length / 2)] : null;
+      return res.status(200).json({
+        days, total: rows.length, not_contacted: missed, median_days_to_contact: medianResponse,
+        rows, fetchedAt: new Date().toISOString()
+      });
+    } catch (e) {
+      return res.status(500).json({ error: e.message });
+    }
+  }
+
   // Contact search (autocomplete for logging modals)
   if (urlObj.searchParams.get('action') === 'search_contact') {
     const q = (urlObj.searchParams.get('q') || '').trim();
