@@ -353,27 +353,30 @@ export default async function handler(req, res) {
         'num_conversion_events', 'num_contacted_notes', 'notes_last_contacted',
         'hubspot_owner_id', 'hs_lead_status', 'lifecyclestage', 'hs_analytics_source'
       ];
-      const contacts = await fetchAll(hsToken, 'contacts', [
-        { propertyName: 'recent_conversion_date', operator: 'GTE', value: since }
-      ], props, [{ propertyName: 'recent_conversion_date', direction: 'DESCENDING' }], 3);
-
-      // Owner id → name (covers reps AND non-rep owners like SDRs/CS)
+      // Contacts + owners in PARALLEL (owners list is small and rarely changes)
       const ownerNames = { ...OWNER_ID_TO_NAME };
-      try {
-        let after2 = null;
-        for (let p2 = 0; p2 < 3; p2++) {
-          const or = await fetch(`https://api.hubapi.com/crm/v3/owners/?limit=100${after2 ? `&after=${after2}` : ''}`, {
-            headers: { Authorization: `Bearer ${hsToken}` }
-          });
-          if (!or.ok) break;
-          const oj = await or.json();
-          for (const o of (oj.results || [])) {
-            ownerNames[o.id] = [o.firstName, o.lastName].filter(Boolean).join(' ') || o.email || o.id;
-          }
-          after2 = oj.paging?.next?.after || null;
-          if (!after2) break;
-        }
-      } catch {}
+      const [contacts] = await Promise.all([
+        fetchAll(hsToken, 'contacts', [
+          { propertyName: 'recent_conversion_date', operator: 'GTE', value: since }
+        ], props, [{ propertyName: 'recent_conversion_date', direction: 'DESCENDING' }], 3),
+        (async () => {
+          try {
+            let after2 = null;
+            for (let p2 = 0; p2 < 3; p2++) {
+              const or = await fetch(`https://api.hubapi.com/crm/v3/owners/?limit=100${after2 ? `&after=${after2}` : ''}`, {
+                headers: { Authorization: `Bearer ${hsToken}` }
+              });
+              if (!or.ok) break;
+              const oj = await or.json();
+              for (const o of (oj.results || [])) {
+                ownerNames[o.id] = [o.firstName, o.lastName].filter(Boolean).join(' ') || o.email || o.id;
+              }
+              after2 = oj.paging?.next?.after || null;
+              if (!after2) break;
+            }
+          } catch {}
+        })()
+      ]);
 
       const SOURCE_LABELS = {
         ORGANIC_SEARCH: 'Organic Search', PAID_SEARCH: 'Paid Search', EMAIL_MARKETING: 'Email Marketing',
@@ -424,6 +427,8 @@ export default async function handler(req, res) {
       const missed = rows.filter(r2 => !r2.contacted).length;
       const respTimes = rows.filter(r2 => r2.days_to_contact != null).map(r2 => r2.days_to_contact).sort((a, b) => a - b);
       const medianResponse = respTimes.length ? respTimes[Math.floor(respTimes.length / 2)] : null;
+      // Submissions move slowly — cache at the edge so reloads are instant
+      res.setHeader('Cache-Control', 's-maxage=300, stale-while-revalidate=600');
       return res.status(200).json({
         days, total: rows.length, not_contacted: missed, median_days_to_contact: medianResponse,
         rows, fetchedAt: new Date().toISOString()
