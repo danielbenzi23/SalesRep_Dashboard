@@ -726,6 +726,7 @@ Return VALID JSON only: {"subject": "...", "body": "..."}`;
           }
         } catch (e) { console.error('[weekly dedupe]', e.message); }
 
+        const TOP_N = Math.max(1, Math.min(25, parseInt(process.env.WEEKLY_TOP_N || '10', 10) || 10));
         const ranked = Object.values(byBuyer)
           .sort((a, b) => b.intent_score - a.intent_score || b.signal_count - a.signal_count);
         const targets = [];
@@ -734,7 +735,7 @@ Return VALID JSON only: {"subject": "...", "body": "..."}`;
           const hit = recentlyDossiered.get(String(t.buyerId)) || recentlyDossiered.get((t.name || '').toLowerCase());
           if (hit) { if (skipped_recent.length < 12) skipped_recent.push(t.name || String(t.buyerId)); continue; }
           targets.push(t);
-          if (targets.length >= 25) break;
+          if (targets.length >= TOP_N) break;
         }
         const rfp_count = (rfp.result || []).length;
         return { week, targets, skipped_recent, rfp_count, total_signals: all.length };
