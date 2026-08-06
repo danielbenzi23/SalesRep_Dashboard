@@ -1131,6 +1131,10 @@ Return VALID JSON only: {"hooks": {"<school>": "<hook>"}}`;
           lines.join('\n') +
           (notes.length ? `\n\nNotes: ${notes.join(' ')}` : '') +
           `\n\nAll PDFs: ${DRIVE_FOLDER_LINK}`;
+        // Debug: return the exact message instead of sending it
+        if (url.searchParams.get('dry') === '1') {
+          return res.status(200).json({ dry: true, length: channelMsg.length, line_count: lines.length, line_lengths: lines.map(l => l.length), text: channelMsg });
+        }
         const testEmail = process.env.SLACK_TEST_EMAIL;
         try {
           if (testEmail) {
