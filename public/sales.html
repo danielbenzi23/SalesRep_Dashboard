@@ -421,12 +421,24 @@
               <option value="contacted">Contacted</option>
             </select>
             <input type="text" id="forms-search" placeholder="Search…" style="padding:6px 10px;border:0.5px solid rgba(0,0,0,0.15);border-radius:6px;font-size:12px;width:150px" />
+            <select id="forms-page-size" style="padding:6px 10px;border:0.5px solid rgba(0,0,0,0.15);border-radius:6px;font-size:12px">
+              <option value="25" selected>25 / page</option>
+              <option value="50">50 / page</option>
+              <option value="100">100 / page</option>
+            </select>
           </div>
         </div>
         <div id="forms-chips" style="display:flex;gap:14px;margin-top:12px;flex-wrap:wrap"></div>
       </div>
       <div class="panel">
         <div id="forms-table" class="loading">Loading form submissions…</div>
+        <div id="forms-pager" style="display:none;justify-content:space-between;align-items:center;margin-top:12px;font-size:12px;color:#5F5E5A">
+          <span id="forms-pager-label"></span>
+          <div style="display:flex;gap:8px">
+            <button id="forms-prev" style="padding:6px 14px;border:0.5px solid rgba(0,0,0,0.15);border-radius:8px;background:#fff;cursor:pointer;font-size:12px">← Prev</button>
+            <button id="forms-next" style="padding:6px 14px;border:0.5px solid rgba(0,0,0,0.15);border-radius:8px;background:#fff;cursor:pointer;font-size:12px">Next →</button>
+          </div>
+        </div>
       </div>
     </div>
 
@@ -1774,6 +1786,7 @@
   // -------- FORMS (submissions tracker) --------
   let formsCache = null;
   let formsCacheDays = null;
+  let formsPage = 0;
 
   async function loadForms(force) {
     const days = parseInt(document.getElementById('forms-days').value || '90', 10);
@@ -1814,7 +1827,25 @@
 
     const fmtD = s => s ? new Date(s).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) : '—';
     const t = document.getElementById('forms-table');
-    if (!rows.length) { t.innerHTML = '<div style="color:#888780">No submissions match</div>'; return; }
+    const pager = document.getElementById('forms-pager');
+    if (!rows.length) { t.innerHTML = '<div style="color:#888780">No submissions match</div>'; pager.style.display = 'none'; return; }
+
+    // Pagination
+    const pageSize = parseInt(document.getElementById('forms-page-size').value || '25', 10);
+    const totalPages = Math.max(1, Math.ceil(rows.length / pageSize));
+    if (formsPage >= totalPages) formsPage = totalPages - 1;
+    if (formsPage < 0) formsPage = 0;
+    const start = formsPage * pageSize;
+    const allRows = rows;
+    rows = rows.slice(start, start + pageSize);
+    pager.style.display = 'flex';
+    document.getElementById('forms-pager-label').textContent =
+      `Showing ${start + 1}–${Math.min(start + pageSize, allRows.length)} of ${allRows.length} · page ${formsPage + 1}/${totalPages}`;
+    document.getElementById('forms-prev').disabled = formsPage === 0;
+    document.getElementById('forms-next').disabled = formsPage >= totalPages - 1;
+    document.getElementById('forms-prev').style.opacity = formsPage === 0 ? '.4' : '1';
+    document.getElementById('forms-next').style.opacity = formsPage >= totalPages - 1 ? '.4' : '1';
+
     t.innerHTML = `<div style="overflow-x:auto"><table>
       <thead><tr>
         <th>Contacted</th><th>Submitted</th><th>Contact</th><th>Company</th><th>Type</th><th>Form / meeting</th>
@@ -1846,10 +1877,13 @@
     </table></div>`;
   }
 
-  document.getElementById('forms-days')?.addEventListener('change', () => loadForms(true));
-  document.getElementById('forms-scope')?.addEventListener('change', () => renderForms());
-  document.getElementById('forms-status')?.addEventListener('change', () => renderForms());
-  document.getElementById('forms-search')?.addEventListener('input', () => renderForms());
+  document.getElementById('forms-days')?.addEventListener('change', () => { formsPage = 0; loadForms(true); });
+  document.getElementById('forms-scope')?.addEventListener('change', () => { formsPage = 0; renderForms(); });
+  document.getElementById('forms-status')?.addEventListener('change', () => { formsPage = 0; renderForms(); });
+  document.getElementById('forms-search')?.addEventListener('input', () => { formsPage = 0; renderForms(); });
+  document.getElementById('forms-page-size')?.addEventListener('change', () => { formsPage = 0; renderForms(); });
+  document.getElementById('forms-prev')?.addEventListener('click', () => { formsPage--; renderForms(); });
+  document.getElementById('forms-next')?.addEventListener('click', () => { formsPage++; renderForms(); });
 
   // -------- CONTACT DEALS MODAL --------
   async function openContactDeals(contactId, contactName) {
