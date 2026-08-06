@@ -378,6 +378,13 @@ async function slackApi(method, payload) {
   if (!j.ok) throw new Error(`Slack ${method}: ${j.error}`);
   return j;
 }
+// Slack treats & < > as control characters in message text — an unescaped "<"
+// in a hook (e.g. "<$1M") swallows everything until the next ">". Escape all
+// DYNAMIC content; our own <@mentions> and <url|links> stay intact.
+function slackEsc(s) {
+  return String(s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
 async function slackDmByEmail(email, text) {
   const testEmail = process.env.SLACK_TEST_EMAIL;
   const target = testEmail || email;
@@ -1034,13 +1041,13 @@ Return VALID JSON only: {"hooks": {"<school>": "<hook>"}}`;
               .sort((a, b) => (b.t.intent_score || 0) - (a.t.intent_score || 0));
             const lines = rows2.map((r6, i) => {
               const st = stateOf(r6.d);
-              const hook = (state.hooks || {})[r6.d.school_name] || String(r6.d.dossier?.banner_text || '').replace(/<[^>]+>/g, '').slice(0, 140);
-              const bridge = r6.t.top_signal?.bridge || r6.t.top_signal?.type || 'signals';
+              const hook = slackEsc((state.hooks || {})[r6.d.school_name] || String(r6.d.dossier?.banner_text || '').replace(/<[^>]+>/g, '').slice(0, 140));
+              const bridge = slackEsc(r6.t.top_signal?.bridge || r6.t.top_signal?.type || 'signals');
               const link = r6.p ? `<${r6.p.url}|Dossier>` : 'PDF pending';
-              return `${i + 1}. ${r6.d.school_name}${st ? ` (${st})` : ''} | ${score5(r6.t)}/5 | ${hook} | ${bridge} | ${repMention(r6.d.prepared_for)} | ${link}`;
+              return `${i + 1}. ${slackEsc(r6.d.school_name)}${st ? ` (${st})` : ''} | ${score5(r6.t)}/5 | ${hook} | ${bridge} | ${repMention(r6.d.prepared_for)} | ${link}`;
             });
             const notes = [];
-            if ((state.skipped_recent || []).length) notes.push(`${state.skipped_recent.join(', ')} re-surfaced but were dossiered within the last 90 days, so they were skipped.`);
+            if ((state.skipped_recent || []).length) notes.push(`${slackEsc(state.skipped_recent.join(', '))} re-surfaced but were dossiered within the last 90 days, so they were skipped.`);
             if (!state.rfp_count) notes.push('No new RFP/RFI signals came out of the bridges this week.');
             const channelMsg =
               `Here are the top ${rows2.length} leads this week with full dossiers.\n\n` +
@@ -1111,13 +1118,13 @@ Return VALID JSON only: {"hooks": {"<school>": "<hook>"}}`;
           .sort((a, b) => (b.t.intent_score || 0) - (a.t.intent_score || 0));
         const lines = rows2.map((r6, i) => {
           const st = stateOf(r6.d);
-          const hook = (bundle.hooks || {})[r6.d.school_name] || String(r6.d.dossier?.banner_text || '').replace(/<[^>]+>/g, '').slice(0, 140);
-          const bridge = r6.t.top_signal?.bridge || r6.t.top_signal?.type || 'signals';
+          const hook = slackEsc((bundle.hooks || {})[r6.d.school_name] || String(r6.d.dossier?.banner_text || '').replace(/<[^>]+>/g, '').slice(0, 140));
+          const bridge = slackEsc(r6.t.top_signal?.bridge || r6.t.top_signal?.type || 'signals');
           const link = r6.p ? `<${r6.p.url}|Dossier>` : 'PDF pending';
-          return `${i + 1}. ${r6.d.school_name}${st ? ` (${st})` : ''} | ${score5(r6.t)}/5 | ${hook} | ${bridge} | ${repMention(r6.d.prepared_for)} | ${link}`;
+          return `${i + 1}. ${slackEsc(r6.d.school_name)}${st ? ` (${st})` : ''} | ${score5(r6.t)}/5 | ${hook} | ${bridge} | ${repMention(r6.d.prepared_for)} | ${link}`;
         });
         const notes = [];
-        if ((bundle.skipped_recent || []).length) notes.push(`${bundle.skipped_recent.join(', ')} re-surfaced but were dossiered within the last 90 days, so they were skipped.`);
+        if ((bundle.skipped_recent || []).length) notes.push(`${slackEsc(bundle.skipped_recent.join(', '))} re-surfaced but were dossiered within the last 90 days, so they were skipped.`);
         if (!bundle.rfp_count) notes.push('No new RFP/RFI signals came out of the bridges this week.');
         const channelMsg =
           `Here are the top ${rows2.length} leads this week with full dossiers.\n\n` +
