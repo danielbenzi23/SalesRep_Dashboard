@@ -387,6 +387,29 @@ async function slackDmByEmail(email, text) {
   await slackApi('chat.postMessage', { channel: conv.channel.id, text: prefix + text, unfurl_links: false });
 }
 
+// Territory fallback (DegreeSight Sales Territory Map — July 2026).
+// Used when a school has NO owner in HubSpot: assign by state.
+// Cody Bennett owns no states by design.
+const STATE_TO_REP = {
+  // Michael Cronin — Northeast + Southeast (blue)
+  AL: 'Michael Cronin', FL: 'Michael Cronin', GA: 'Michael Cronin', KY: 'Michael Cronin',
+  ME: 'Michael Cronin', NY: 'Michael Cronin', NC: 'Michael Cronin', OH: 'Michael Cronin',
+  PA: 'Michael Cronin', VA: 'Michael Cronin', WV: 'Michael Cronin', CT: 'Michael Cronin',
+  DE: 'Michael Cronin', DC: 'Michael Cronin', MD: 'Michael Cronin', MA: 'Michael Cronin',
+  NH: 'Michael Cronin', NJ: 'Michael Cronin', RI: 'Michael Cronin', VT: 'Michael Cronin',
+  // Charles Ramos — West + Central + parts of the South (green)
+  AZ: 'Charles Ramos', AR: 'Charles Ramos', CO: 'Charles Ramos', ID: 'Charles Ramos',
+  KS: 'Charles Ramos', LA: 'Charles Ramos', MI: 'Charles Ramos', MS: 'Charles Ramos',
+  MO: 'Charles Ramos', MT: 'Charles Ramos', NE: 'Charles Ramos', NV: 'Charles Ramos',
+  NM: 'Charles Ramos', ND: 'Charles Ramos', OK: 'Charles Ramos', OR: 'Charles Ramos',
+  SC: 'Charles Ramos', SD: 'Charles Ramos', TN: 'Charles Ramos', TX: 'Charles Ramos',
+  UT: 'Charles Ramos', WA: 'Charles Ramos', WI: 'Charles Ramos', WY: 'Charles Ramos',
+  // Jay Fedje — Upper Midwest (red)
+  IL: 'Jay Fedje', IN: 'Jay Fedje', IA: 'Jay Fedje', MN: 'Jay Fedje',
+  // Drew Melendres — CA + AK + HI (orange)
+  CA: 'Drew Melendres', AK: 'Drew Melendres', HI: 'Drew Melendres'
+};
+
 // Full dossier generation (Starbridge + HubSpot + Claude). Shared by the
 // interactive ?action=dossier route and the automatic weekly cron.
 async function generateDossier(buyerId, buyerName) {
@@ -429,12 +452,20 @@ async function generateDossier(buyerId, buyerName) {
   let dossier = null, claude_error = null;
   try { dossier = await claudeDossier(claudePayload); }
   catch (e) { claude_error = e.message; }
+
+  // Ownership: HubSpot routing first; if the school has NO owner in HubSpot,
+  // fall back to the sales territory map by state (Starbridge StateCode).
+  const stateCode = String(attributes?.StateCode || '').toUpperCase().trim();
+  const territoryRep = STATE_TO_REP[stateCode] || null;
+  const preparedFor = hubspot?.destination_owner || territoryRep || null;
+
   return {
     buyerId,
     school_name: buyerName,
     skip_recommended: skip,
     skip_reason: hubspot?.skip_reason || null,
-    prepared_for: hubspot?.destination_owner || null,
+    prepared_for: preparedFor,
+    _assigned_via: hubspot?.destination_owner ? 'hubspot' : (territoryRep ? `territory (${stateCode})` : null),
     owner_name: hubspot?.owner_name || null,
     deal_state: hubspot?.deal_state || 'unknown',
     hubspot_contacts: hubspot?.contacts || [],
