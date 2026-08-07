@@ -476,8 +476,12 @@ async function generateDossier(buyerId, buyerName) {
   catch (e) { claude_error = e.message; }
 
   // Ownership: HubSpot routing first; if the school has NO owner in HubSpot,
-  // fall back to the sales territory map by state (Starbridge StateCode).
-  const stateCode = String(attributes?.StateCode || '').toUpperCase().trim();
+  // fall back to the sales territory map by state. State cascade:
+  // Starbridge StateCode -> Claude-inferred state -> state at end of context_line.
+  const stateCode =
+    String(attributes?.StateCode || '').toUpperCase().trim() ||
+    String(dossier?.state || '').toUpperCase().trim() ||
+    ((String(dossier?.context_line || '').match(/\b([A-Z]{2})\s*$/) || [])[1] || '');
   const territoryRep = STATE_TO_REP[stateCode] || null;
   const preparedFor = hubspot?.destination_owner || territoryRep || null;
 
@@ -487,6 +491,7 @@ async function generateDossier(buyerId, buyerName) {
     skip_recommended: skip,
     skip_reason: hubspot?.skip_reason || null,
     prepared_for: preparedFor,
+    state_used: stateCode || null,
     _assigned_via: hubspot?.destination_owner ? 'hubspot' : (territoryRep ? `territory (${stateCode})` : null),
     owner_name: hubspot?.owner_name || null,
     deal_state: hubspot?.deal_state || 'unknown',
@@ -524,6 +529,7 @@ Return VALID JSON only:
   "theme": "hot" | "warm" | "neutral",
   "tag": "Signal-Driven" | "Inbound" | "Account Review",
   "context_line": "≤12 words: target type · institution type · City, ST",
+  "state": "two-letter US state code of the institution. If not present in DATA, infer it from your own knowledge (e.g. resolve acronyms like VVC = Victor Valley College, CA). null ONLY if truly unknown.",
   "banner_label": "Why it's hot" | "Why it matters",
   "banner_text": "≤60 words. Lead with how it surfaced and why now. <b> allowed.",
   "tldr": ["3 items, each ≤35 words, start with <b>bolded takeaway.</b>"],
@@ -1051,6 +1057,8 @@ Return VALID JSON only: {"hooks": {"<school>": "<hook>"}}`;
             // 2) Single channel message to #team-sales (Weekly Signal Dossiers format)
             const score5 = t3 => (t3?.strong_signals >= 2 || t3?.intent_score >= 9) ? 5 : (t3?.strong_signals >= 1 || t3?.intent_score >= 5) ? 4 : 3;
             const stateOf = d3 => {
+              const s0 = String(d3.state_used || d3.dossier?.state || '').toUpperCase().trim();
+              if (s0) return s0;
               const m2 = String(d3.dossier?.context_line || '').match(/\b([A-Z]{2})\s*$/);
               return m2 ? m2[1] : null;
             };
@@ -1058,6 +1066,8 @@ Return VALID JSON only: {"hooks": {"<school>": "<hook>"}}`;
               const r5 = WEEKLY_REPS.find(x => x.name === name);
               return r5 ? `<@${r5.slackId}>` : (name || 'Unassigned');
             };
+            // Territory fallback at render time too (covers dossiers saved before the fix)
+            const assignedRep = d3 => d3.prepared_for || STATE_TO_REP[stateOf(d3) || ''] || null;
             const rows2 = state.dossiers
               .map(d3 => ({ d: d3, t: state.targets.find(t3 => t3.buyerId === d3.buyerId) || {}, p: (state.pdfs || []).find(p2 => p2.school === d3.school_name) }))
               .sort((a, b) => (b.t.intent_score || 0) - (a.t.intent_score || 0));
@@ -1066,7 +1076,7 @@ Return VALID JSON only: {"hooks": {"<school>": "<hook>"}}`;
               const hook = slackEsc((state.hooks || {})[r6.d.school_name] || String(r6.d.dossier?.banner_text || '').replace(/<[^>]+>/g, '').slice(0, 140));
               const bridge = slackEsc(r6.t.top_signal?.bridge || r6.t.top_signal?.type || 'signals');
               const link = r6.p ? `<${r6.p.url}|Dossier>` : 'PDF pending';
-              return `${i + 1}. ${slackEsc(r6.d.school_name)}${st ? ` (${st})` : ''} | ${score5(r6.t)}/5 | ${hook} | ${bridge} | ${repMention(r6.d.prepared_for)} | ${link}`;
+              return `${i + 1}. ${slackEsc(r6.d.school_name)}${st ? ` (${st})` : ''} | ${score5(r6.t)}/5 | ${hook} | ${bridge} | ${repMention(assignedRep(r6.d))} | ${link}`;
             });
             const notes = [];
             if ((state.skipped_recent || []).length) notes.push(`${slackEsc(state.skipped_recent.join(', '))} re-surfaced but were dossiered within the last 90 days, so they were skipped.`);
@@ -1131,8 +1141,14 @@ Return VALID JSON only: {"hooks": {"<school>": "<hook>"}}`;
         const bundle = await blobReadJson(`weekly/${week}/bundle.json`);
         if (!bundle) return res.status(404).json({ error: `No saved bundle for week ${week}` });
         const score5 = t3 => (t3?.strong_signals >= 2 || t3?.intent_score >= 9) ? 5 : (t3?.strong_signals >= 1 || t3?.intent_score >= 5) ? 4 : 3;
-        const stateOf = d3 => { const m2 = String(d3.dossier?.context_line || '').match(/\b([A-Z]{2})\s*$/); return m2 ? m2[1] : null; };
+        const stateOf = d3 => {
+          const s0 = String(d3.state_used || d3.dossier?.state || '').toUpperCase().trim();
+          if (s0) return s0;
+          const m2 = String(d3.dossier?.context_line || '').match(/\b([A-Z]{2})\s*$/); return m2 ? m2[1] : null;
+        };
         const repMention = name => { const r5 = WEEKLY_REPS.find(x => x.name === name); return r5 ? `<@${r5.slackId}>` : (name || 'Unassigned'); };
+        // Territory fallback at render time too (covers dossiers saved before the fix)
+        const assignedRep = d3 => d3.prepared_for || STATE_TO_REP[stateOf(d3) || ''] || null;
         const rows2 = (bundle.dossiers || [])
           .map(d3 => ({ d: d3, t: (bundle.targets || []).find(t3 => t3.buyerId === d3.buyerId) || {}, p: (bundle.pdfs || []).find(p2 => p2.school === d3.school_name) }))
           .sort((a, b) => (b.t.intent_score || 0) - (a.t.intent_score || 0));
@@ -1141,7 +1157,7 @@ Return VALID JSON only: {"hooks": {"<school>": "<hook>"}}`;
           const hook = slackEsc((bundle.hooks || {})[r6.d.school_name] || String(r6.d.dossier?.banner_text || '').replace(/<[^>]+>/g, '').slice(0, 140));
           const bridge = slackEsc(r6.t.top_signal?.bridge || r6.t.top_signal?.type || 'signals');
           const link = r6.p ? `<${r6.p.url}|Dossier>` : 'PDF pending';
-          return `${i + 1}. ${slackEsc(r6.d.school_name)}${st ? ` (${st})` : ''} | ${score5(r6.t)}/5 | ${hook} | ${bridge} | ${repMention(r6.d.prepared_for)} | ${link}`;
+          return `${i + 1}. ${slackEsc(r6.d.school_name)}${st ? ` (${st})` : ''} | ${score5(r6.t)}/5 | ${hook} | ${bridge} | ${repMention(assignedRep(r6.d))} | ${link}`;
         });
         const notes = [];
         if ((bundle.skipped_recent || []).length) notes.push(`${slackEsc(bundle.skipped_recent.join(', '))} re-surfaced but were dossiered within the last 90 days, so they were skipped.`);
