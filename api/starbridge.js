@@ -385,6 +385,21 @@ function slackEsc(s) {
   return String(s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
 
+// Slack chat.postMessage behaves badly past ~4,000 chars. Split a long message
+// into chunks that each stay well under the limit, preserving whole lines.
+function slackChunks(header, lines, footer, maxLen = 3200) {
+  const chunks = [];
+  let cur = header;
+  for (const ln of lines) {
+    if ((cur + '\n' + ln).length > maxLen && cur.trim()) { chunks.push(cur); cur = ln; }
+    else cur = cur ? cur + '\n' + ln : ln;
+  }
+  if ((cur + footer).length > maxLen && cur.trim()) { chunks.push(cur); cur = ''; }
+  cur = cur ? cur + footer : footer.trim();
+  if (cur.trim()) chunks.push(cur);
+  return chunks;
+}
+
 async function slackDmByEmail(email, text) {
   const testEmail = process.env.SLACK_TEST_EMAIL;
   const target = testEmail || email;
@@ -941,6 +956,13 @@ Return VALID JSON only:
               return res.status(200).json({ ok: true, phase: 'done', week, finished_at: existing.finished_at });
             }
             if (existing && existing.phase && existing.phase !== 'done') {
+              // Stall guard: only resume if the chain looks DEAD (no snapshot
+              // update in 150s). A healthy chain updates every ~30s — this makes
+              // periodic watchdog pings safe (no parallel forks).
+              const ageMs = Date.now() - (Date.parse(existing.updated_at || existing.started_at || 0) || 0);
+              if (ageMs < 150000) {
+                return res.status(200).json({ ok: true, phase: existing.phase, running: true, snapshot_age_s: Math.round(ageMs / 1000), dossiers_done: (existing.dossiers || []).length });
+              }
               state = existing; // resume a broken chain from the last snapshot
             }
           }
@@ -1049,24 +1071,21 @@ Return VALID JSON only: {"hooks": {"<school>": "<hook>"}}`;
             const notes = [];
             if ((state.skipped_recent || []).length) notes.push(`${slackEsc(state.skipped_recent.join(', '))} re-surfaced but were dossiered within the last 90 days, so they were skipped.`);
             if (!state.rfp_count) notes.push('No new RFP/RFI signals came out of the bridges this week.');
-            const channelMsg =
-              `Here are the top ${rows2.length} leads this week with full dossiers.\n\n` +
-              lines.join('\n') +
+            const header = `Here are the top ${rows2.length} leads this week with full dossiers.\n`;
+            const footer =
               (notes.length ? `\n\nNotes: ${notes.join(' ')}` : '') +
               `\n\nAll PDFs: ${DRIVE_FOLDER_LINK}`;
+            const chunks = slackChunks(header, lines, footer);
 
             state.dm_ok = 0; state.dm_fail = 0;
             const testEmail = process.env.SLACK_TEST_EMAIL;
             try {
-              if (testEmail) {
-                await slackDmByEmail(testEmail, `🧪 *[TEST — would post to ${process.env.SLACK_SALES_CHANNEL || '#team-sales'}]*\n` + channelMsg);
-              } else {
-                await slackApi('chat.postMessage', {
-                  channel: process.env.SLACK_SALES_CHANNEL || '#team-sales',
-                  text: channelMsg, unfurl_links: false
-                });
+              for (let ci = 0; ci < chunks.length; ci++) {
+                const prefix = ci === 0 && testEmail ? `🧪 *[TEST — would post to ${process.env.SLACK_SALES_CHANNEL || '#team-sales'}]*\n` : '';
+                if (testEmail) await slackDmByEmail(testEmail, prefix + chunks[ci]);
+                else await slackApi('chat.postMessage', { channel: process.env.SLACK_SALES_CHANNEL || '#team-sales', text: chunks[ci], unfurl_links: false });
               }
-              state.dm_ok = 1;
+              state.dm_ok = chunks.length;
             } catch (e) { state.dm_fail = 1; state.errors.push(`slack channel: ${e.message}`.slice(0, 200)); }
             state.phase = 'done';
             state.finished_at = new Date().toISOString();
@@ -1077,7 +1096,8 @@ Return VALID JSON only: {"hooks": {"<school>": "<hook>"}}`;
           if (state.retry > 3) { state.phase = 'done'; state.finished_at = new Date().toISOString(); state.aborted = true; }
         }
 
-        // Snapshot for cron_status (best effort)
+        // Snapshot for cron_status + stall detection (best effort)
+        state.updated_at = new Date().toISOString();
         try { await blobPut(`weekly/${state.week}/state.json`, Buffer.from(JSON.stringify(state)), 'application/json'); }
         catch (e) { console.error('[weekly snapshot]', e.message); }
 
@@ -1126,23 +1146,23 @@ Return VALID JSON only: {"hooks": {"<school>": "<hook>"}}`;
         const notes = [];
         if ((bundle.skipped_recent || []).length) notes.push(`${slackEsc(bundle.skipped_recent.join(', '))} re-surfaced but were dossiered within the last 90 days, so they were skipped.`);
         if (!bundle.rfp_count) notes.push('No new RFP/RFI signals came out of the bridges this week.');
-        const channelMsg =
-          `Here are the top ${rows2.length} leads this week with full dossiers.\n\n` +
-          lines.join('\n') +
+        const header = `Here are the top ${rows2.length} leads this week with full dossiers.\n`;
+        const footer =
           (notes.length ? `\n\nNotes: ${notes.join(' ')}` : '') +
           `\n\nAll PDFs: ${DRIVE_FOLDER_LINK}`;
-        // Debug: return the exact message instead of sending it
+        const chunks = slackChunks(header, lines, footer);
+        // Debug: return the exact chunks instead of sending
         if (url.searchParams.get('dry') === '1') {
-          return res.status(200).json({ dry: true, length: channelMsg.length, line_count: lines.length, line_lengths: lines.map(l => l.length), text: channelMsg });
+          return res.status(200).json({ dry: true, chunk_count: chunks.length, chunk_lengths: chunks.map(c => c.length), chunks });
         }
         const testEmail = process.env.SLACK_TEST_EMAIL;
         try {
-          if (testEmail) {
-            await slackDmByEmail(testEmail, `🧪 *[TEST — would post to ${process.env.SLACK_SALES_CHANNEL || '#team-sales'}]*\n` + channelMsg);
-          } else {
-            await slackApi('chat.postMessage', { channel: process.env.SLACK_SALES_CHANNEL || '#team-sales', text: channelMsg, unfurl_links: false });
+          for (let ci = 0; ci < chunks.length; ci++) {
+            const prefix = ci === 0 && testEmail ? `🧪 *[TEST — would post to ${process.env.SLACK_SALES_CHANNEL || '#team-sales'}]*\n` : '';
+            if (testEmail) await slackDmByEmail(testEmail, prefix + chunks[ci]);
+            else await slackApi('chat.postMessage', { channel: process.env.SLACK_SALES_CHANNEL || '#team-sales', text: chunks[ci], unfurl_links: false });
           }
-          return res.status(200).json({ ok: true, sent_to: testEmail ? `DM ${testEmail} (test mode)` : (process.env.SLACK_SALES_CHANNEL || '#team-sales'), lines: rows2.length });
+          return res.status(200).json({ ok: true, sent_to: testEmail ? `DM ${testEmail} (test mode)` : (process.env.SLACK_SALES_CHANNEL || '#team-sales'), lines: rows2.length, messages: chunks.length });
         } catch (e) {
           return res.status(502).json({ error: `Slack: ${e.message}` });
         }
