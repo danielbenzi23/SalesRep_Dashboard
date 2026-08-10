@@ -1135,6 +1135,15 @@ Return VALID JSON only: {"hooks": {"<school>": "<hook>"}}`;
         });
       }
 
+      // --- delmsg: delete a bot-posted message (admin cleanup, cron-secret protected) ---
+      if (sub === 'delmsg') {
+        const ts = url.searchParams.get('ts');
+        if (!ts) return res.status(400).json({ error: 'ts required' });
+        const ch = url.searchParams.get('channel') || 'C02JTCZQQ65';
+        await slackApi('chat.delete', { channel: ch, ts });
+        return res.status(200).json({ ok: true, deleted: ts, channel: ch });
+      }
+
       // --- resend: rebuild + resend the Slack message from the SAVED bundle ---
       // (no regeneration — use after fixing Slack credentials)
       if (sub === 'resend') {
