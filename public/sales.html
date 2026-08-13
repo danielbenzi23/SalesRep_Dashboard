@@ -335,6 +335,27 @@
     <!-- PIPELINE -->
     <div data-panel="pipeline" style="display:none">
       <div class="panel" style="margin-bottom:14px">
+        <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
+          <div class="panel-title" style="margin:0">💼 Deal amounts <span id="pv-context" style="font-size:11px;color:#888780;font-weight:400"></span></div>
+          <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+            <div style="display:flex;background:#F1EFE8;border-radius:8px;padding:2px">
+              <button id="pv-tab-open" class="pv-tab" onclick="setPvScope('open')" style="border:0;border-radius:6px;padding:5px 12px;font-size:12px;cursor:pointer;background:#fff;font-weight:500">Open pipeline</button>
+              <button id="pv-tab-quarter" class="pv-tab" onclick="setPvScope('quarter')" style="border:0;border-radius:6px;padding:5px 12px;font-size:12px;cursor:pointer;background:transparent">Current quarter</button>
+            </div>
+            <select id="pv-pipeline" onchange="loadPipelineView()" style="font-size:12px;padding:5px 8px;border-radius:8px;border:0.5px solid rgba(0,0,0,0.15)">
+              <option value="ds">DS Sales Team</option>
+              <option value="all">All pipelines</option>
+            </select>
+            <select id="pv-owner" onchange="loadPipelineView()" style="font-size:12px;padding:5px 8px;border-radius:8px;border:0.5px solid rgba(0,0,0,0.15)">
+              <option value="me">My deals</option>
+              <option value="all">All owners</option>
+            </select>
+          </div>
+        </div>
+        <div id="pv-metrics" class="loading" style="margin-top:10px">Loading…</div>
+        <div id="pv-deals" style="margin-top:12px"></div>
+      </div>
+      <div class="panel" style="margin-bottom:14px">
         <div class="panel-title">📊 Pipeline metrics (YTD)</div>
         <div id="pipeline-metrics" style="display:grid;grid-template-columns:repeat(5,1fr);gap:10px;margin-top:8px"></div>
       </div>
@@ -809,12 +830,14 @@
       leadsCache = null;
       leadsCacheDays = null;
       emailThreadsCache = null;
+      pvCache = {};
       renderAll();
       // Reload active per-rep tab
       const activeTab = document.querySelector('.tab.active')?.dataset.tab;
       if (activeTab === 'leads') loadLeads();
       if (activeTab === 'forms') loadForms();
       if (activeTab === 'emails') loadEmails();
+      if (activeTab === 'pipeline') loadPipelineView();
     };
   }
 
@@ -897,6 +920,88 @@
     if (days > 0) return `in ${days}d`;
     return `${Math.abs(days)}d overdue`;
   }
+
+  // ---- Pipeline view (HubSpot-style deal amounts + quarter/pipeline/owner filters) ----
+  let pvScope = 'open';
+  let pvCache = {};
+  function setPvScope(s) {
+    pvScope = s;
+    document.getElementById('pv-tab-open').style.background = s === 'open' ? '#fff' : 'transparent';
+    document.getElementById('pv-tab-open').style.fontWeight = s === 'open' ? '500' : '400';
+    document.getElementById('pv-tab-quarter').style.background = s === 'quarter' ? '#fff' : 'transparent';
+    document.getElementById('pv-tab-quarter').style.fontWeight = s === 'quarter' ? '500' : '400';
+    loadPipelineView();
+  }
+  window.setPvScope = setPvScope;
+
+  async function loadPipelineView() {
+    const pipeline = document.getElementById('pv-pipeline').value;
+    const owner = document.getElementById('pv-owner').value;
+    const repId = salesData?.rep?.ownerId || '';
+    const key = `${pvScope}|${pipeline}|${owner}|${repId}`;
+    const box = document.getElementById('pv-metrics');
+    const dbox = document.getElementById('pv-deals');
+    let d = pvCache[key];
+    if (!d) {
+      box.innerHTML = '<div class="loading">Loading…</div>';
+      dbox.innerHTML = '';
+      try {
+        const r = await fetch(`/api/sales-data?action=pipeline_view&scope=${pvScope}&pipeline=${pipeline}&owner=${owner}${repId ? `&ownerId=${repId}` : ''}`);
+        if (!r.ok) { const j = await r.json().catch(() => ({})); box.innerHTML = `<div style="color:#791F1F">${j.detail || j.error || r.status}</div>`; return; }
+        d = await r.json();
+        pvCache[key] = d;
+      } catch (e) { box.innerHTML = `<div style="color:#791F1F">${e.message}</div>`; return; }
+    }
+    const m = d.metrics;
+    document.getElementById('pv-context').textContent =
+      (pvScope === 'quarter' ? `· close date in ${d.quarter}` : '· open deals') +
+      (pipeline === 'all' ? ' · all pipelines' : '') + (owner === 'all' ? ' · all owners' : '');
+    const card = (lbl, mm) => `
+      <div class="stat" style="padding:12px">
+        <div class="lbl">${lbl}</div>
+        <div class="val" style="font-size:21px">${fmtMoneyK(mm.amount)}</div>
+        <div style="font-size:11px;color:#888780;margin-top:2px">${mm.count} deal${mm.count === 1 ? '' : 's'} · avg ${fmtMoneyK(mm.avg)}</div>
+      </div>`;
+    box.innerHTML = `<div style="display:grid;grid-template-columns:repeat(6,1fr);gap:10px">
+      ${card('Total deal amount', m.total)}
+      ${card('Weighted amount', m.weighted)}
+      ${card('Open deal amount', m.open)}
+      ${card('Closed won amount', m.closed)}
+      ${card('New this quarter', m.new)}
+      <div class="stat" style="padding:12px">
+        <div class="lbl">Average deal age</div>
+        <div class="val" style="font-size:21px">${m.avg_age_months} mo</div>
+        <div style="font-size:11px;color:#888780;margin-top:2px">open deals · create → today</div>
+      </div>
+    </div>`;
+
+    // Deal list only when the view differs from the default table below
+    if (pvScope === 'quarter' || pipeline === 'all' || owner === 'all') {
+      const statusBadge = s => s === 'won' ? '<span class="badge" style="background:#E1F5EE;color:#0F6E56">Won</span>'
+        : s === 'lost' ? '<span class="badge" style="background:#FCEBEB;color:#791F1F">Lost</span>'
+        : '<span class="badge" style="background:#E6F1FB;color:#0C447C">Open</span>';
+      dbox.innerHTML = `<div style="font-size:12px;color:#5F5E5A;margin-bottom:6px">${d.total_count} deals${d.total_count > 100 ? ' (showing top 100 by amount)' : ''}</div>
+      <table>
+        <thead><tr><th>Deal</th>${pipeline === 'all' ? '<th>Pipeline</th>' : ''}<th>Stage</th><th></th>
+          <th style="text-align:right">Amount</th><th style="text-align:right">Weighted</th>
+          ${owner === 'all' ? '<th>Owner</th>' : ''}<th>Close date</th></tr></thead>
+        <tbody>${d.deals.map(o => `
+          <tr>
+            <td>${escapeHtml(o.dealname)}</td>
+            ${pipeline === 'all' ? `<td><span class="meta">${escapeHtml(o.pipeline || '—')}</span></td>` : ''}
+            <td>${escapeHtml(o.stage || '—')}</td>
+            <td>${statusBadge(o.status)}</td>
+            <td style="text-align:right">${fmtMoney(o.amount)}</td>
+            <td style="text-align:right"><span class="meta">${fmtMoney(o.weighted)}</span></td>
+            ${owner === 'all' ? `<td><span class="meta">${escapeHtml(o.owner || '—')}</span></td>` : ''}
+            <td>${fmtDate(o.close_date)}</td>
+          </tr>`).join('')}</tbody>
+      </table>`;
+    } else {
+      dbox.innerHTML = '';
+    }
+  }
+  window.loadPipelineView = loadPipelineView;
 
   function renderPipelineMetrics() {
     const m = salesData.pipeline?.metrics || {};
@@ -3140,6 +3245,7 @@
       if (target === 'emails') loadEmails();
       if (target === 'leads') loadLeads();
       if (target === 'forms') loadForms();
+      if (target === 'pipeline') loadPipelineView();
       if (target === 'signals') loadSignals();
       if (target === 'meeting-intel') loadMeetingIntel();
       if (target === 'buyer-intel') loadBuyerIntel();
