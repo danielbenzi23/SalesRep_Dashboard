@@ -338,6 +338,104 @@ export default async function handler(req, res) {
     return todayAiHandler({ hsToken, ownerId, ownerName: nm, annualQuota: q, res });
   }
 
+  // ===== PIPELINE VIEW (HubSpot-style deal amount metrics + filters) =====
+  // Params: scope=open|quarter (close date in current quarter) ·
+  //         pipeline=ds|all · owner=me|all
+  if (urlObj.searchParams.get('action') === 'pipeline_view') {
+    try {
+      const scope = urlObj.searchParams.get('scope') === 'quarter' ? 'quarter' : 'open';
+      const pipelineSel = urlObj.searchParams.get('pipeline') === 'all' ? 'all' : 'ds';
+      const ownerScope = urlObj.searchParams.get('owner') === 'all' ? 'all' : 'me';
+      const nowPv = new Date();
+      const { start: qS, end: qE, name: qNm } = quarterRange(nowPv);
+
+      const filters = [];
+      if (pipelineSel === 'ds') filters.push({ propertyName: 'pipeline', operator: 'EQ', value: DS_PIPELINE });
+      if (ownerScope === 'me') filters.push({ propertyName: 'hubspot_owner_id', operator: 'EQ', value: ownerId });
+      if (scope === 'quarter') {
+        filters.push({ propertyName: 'closedate', operator: 'BETWEEN', value: qS.toISOString(), highValue: qE.toISOString() });
+      } else {
+        filters.push({ propertyName: 'hs_is_closed', operator: 'NEQ', value: 'true' });
+      }
+
+      // Pipeline/stage labels for ALL pipelines (probabilities come from the
+      // pipeline definition, so this also works outside the DS pipeline)
+      const stageLabels = {}; const stageProbs = {}; const pipelineLabels = {};
+      const [dealsRaw] = await Promise.all([
+        fetchAll(hsToken, 'deals', filters,
+          ['dealname', 'amount', 'dealstage', 'pipeline', 'closedate', 'createdate',
+           'hubspot_owner_id', 'hs_is_closed', 'hs_is_closed_won',
+           'notes_last_contacted', 'hs_lastmodifieddate'],
+          [{ propertyName: 'amount', direction: 'DESCENDING' }], 6),
+        (async () => {
+          try {
+            const pr = await fetch('https://api.hubapi.com/crm/v3/pipelines/deals', {
+              headers: { Authorization: `Bearer ${hsToken}` }
+            });
+            if (!pr.ok) return;
+            for (const pl of ((await pr.json()).results || [])) {
+              pipelineLabels[pl.id] = pl.label;
+              for (const st of (pl.stages || [])) {
+                stageLabels[st.id] = st.label;
+                const p = parseFloat(st.metadata?.probability);
+                if (!Number.isNaN(p)) stageProbs[st.id] = p;
+              }
+            }
+          } catch {}
+        })()
+      ]);
+
+      const num = v => parseFloat(v) || 0;
+      const list = dealsRaw.map(d => d.properties);
+      const probOf = d => {
+        const p = stageProbs[d.dealstage];
+        if (p != null) return p;
+        return STAGE_PROBABILITY[d.dealstage] ?? 0;
+      };
+      const isClosed = d => d.hs_is_closed === 'true';
+      const isWon = d => d.hs_is_closed_won === 'true';
+      const sum = arr => arr.reduce((s, d) => s + num(d.amount), 0);
+
+      const openList = list.filter(d => !isClosed(d));
+      const wonList = list.filter(isWon);
+      const newList = list.filter(d => d.createdate && new Date(d.createdate) >= qS && new Date(d.createdate) <= qE);
+      const total = sum(list), weighted = list.reduce((s, d) => s + num(d.amount) * probOf(d), 0);
+      const openAmt = sum(openList), closedAmt = sum(wonList), newAmt = sum(newList);
+      const ageDaysList = openList.filter(d => d.createdate).map(d => Math.max(0, (nowPv - new Date(d.createdate)) / 86400000));
+      const avgAgeMonths = ageDaysList.length ? (ageDaysList.reduce((s, v) => s + v, 0) / ageDaysList.length) / 30.44 : 0;
+
+      const metrics = {
+        total:    { amount: total,     count: list.length,     avg: list.length ? total / list.length : 0 },
+        weighted: { amount: weighted,  count: list.length,     avg: list.length ? weighted / list.length : 0 },
+        open:     { amount: openAmt,   count: openList.length, avg: openList.length ? openAmt / openList.length : 0 },
+        closed:   { amount: closedAmt, count: wonList.length,  avg: wonList.length ? closedAmt / wonList.length : 0 },
+        new:      { amount: newAmt,    count: newList.length,  avg: newList.length ? newAmt / newList.length : 0 },
+        avg_age_months: Math.round(avgAgeMonths * 10) / 10
+      };
+
+      const deals = list.slice(0, 100).map(d => ({
+        dealname: d.dealname || '(no name)',
+        pipeline: pipelineLabels[d.pipeline] || d.pipeline,
+        stage: stageLabels[d.dealstage] || STAGE_NAMES[d.dealstage] || d.dealstage,
+        amount: num(d.amount),
+        probability: probOf(d),
+        weighted: num(d.amount) * probOf(d),
+        owner: OWNER_ID_TO_NAME[d.hubspot_owner_id] || null,
+        close_date: d.closedate || null,
+        create_date: d.createdate || null,
+        status: isWon(d) ? 'won' : (isClosed(d) ? 'lost' : 'open')
+      }));
+
+      res.setHeader('Cache-Control', 's-maxage=300, stale-while-revalidate=600');
+      return res.status(200).json({
+        params: { scope, pipeline: pipelineSel, owner: ownerScope, ownerId },
+        quarter: qNm, metrics, deals, total_count: list.length
+      });
+    } catch (e) {
+      return res.status(502).json({ error: 'pipeline_view failed', detail: e.message });
+    }
+  }
+
   // ===== FORM SUBMISSIONS TRACKER =====
   // Mirrors the "form submissions" Google Sheet: every contact with a recent
   // conversion (website form or meeting link), whether sales has contacted them
