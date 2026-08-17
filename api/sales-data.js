@@ -1066,6 +1066,14 @@ export default async function handler(req, res) {
     bounce_rate: rate(bouncedCount)
   };
 
+  // Edge cache: repeat loads / rep switching are served from Vercel's edge for
+  // 3 min (auth still enforced by middleware, which runs before the cache).
+  // The refresh button busts this with a &fresh= param.
+  if (!urlObj.searchParams.get('fresh')) {
+    res.setHeader('Cache-Control', 's-maxage=180, stale-while-revalidate=600');
+  } else {
+    res.setHeader('Cache-Control', 'no-store');
+  }
   return res.status(200).json({
     rep: { ownerId, name: ownerName, email: user.email, role: user.role, annualQuota },
     asOf: now.toISOString(),
