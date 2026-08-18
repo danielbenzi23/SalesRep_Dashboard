@@ -793,15 +793,37 @@
     }
   }
 
-  async function fetchData(ownerId) {
-    const url = ownerId ? `/api/sales-data?ownerId=${ownerId}` : '/api/sales-data';
-    const r = await fetch(url);
+  // localStorage cache: instant paint with the last data, then refresh in background
+  const SD_CACHE_PREFIX = 'sd_v1_';
+  function sdCacheKey(ownerId) { return SD_CACHE_PREFIX + (ownerId || 'me'); }
+  function sdCacheRead(ownerId) {
+    try {
+      const raw = localStorage.getItem(sdCacheKey(ownerId));
+      if (!raw) return null;
+      const j = JSON.parse(raw);
+      // Ignore anything older than 24h
+      if (!j.asOf || (Date.now() - new Date(j.asOf).getTime()) > 86400000) return null;
+      return j;
+    } catch { return null; }
+  }
+  function sdCacheWrite(ownerId, data) {
+    try { localStorage.setItem(sdCacheKey(ownerId), JSON.stringify(data)); } catch {}
+  }
+
+  async function fetchData(ownerId, opts = {}) {
+    const params = new URLSearchParams();
+    if (ownerId) params.set('ownerId', ownerId);
+    if (opts.fresh) params.set('fresh', Date.now());
+    const qs = params.toString();
+    const r = await fetch('/api/sales-data' + (qs ? `?${qs}` : ''));
     if (!r.ok) {
       const j = await r.json().catch(() => ({}));
       showError(j.error || ('Failed to load: ' + r.status));
       return null;
     }
-    return r.json();
+    const data = await r.json();
+    if (data && data.rep) sdCacheWrite(ownerId, data);
+    return data;
   }
 
   async function fetchTranscripts(limit = 50) {
@@ -825,7 +847,10 @@
     ).join('');
     sel.style.display = '';
     sel.onchange = async () => {
-      salesData = await fetchData(sel.value);
+      // Instant paint from cache for the selected rep, then fresh fetch
+      const cachedRep = sdCacheRead(sel.value);
+      if (cachedRep) { salesData = cachedRep; try { renderAll(); } catch {} }
+      salesData = (await fetchData(sel.value)) || salesData;
       // Invalidate per-rep caches
       leadsCache = null;
       leadsCacheDays = null;
@@ -3295,8 +3320,9 @@
   document.getElementById('refresh-btn').onclick = async () => {
     const btn = document.getElementById('refresh-btn');
     btn.classList.add('spin');
-    salesData = await fetchData(salesData?.rep?.ownerId);
-    renderAll();
+    // fresh=1 busts the Vercel edge cache for a truly live pull
+    const fresh = await fetchData(salesData?.rep?.ownerId, { fresh: true });
+    if (fresh) { salesData = fresh; renderAll(); }
     btn.classList.remove('spin');
   };
 
@@ -3313,8 +3339,15 @@
 
   (async function init() {
     await fetchMe();
-    salesData = await fetchData();
-    if (salesData) renderAll();
+    // Instant paint from localStorage while the fresh fetch runs in background
+    const cached = sdCacheRead();
+    if (cached) {
+      salesData = cached;
+      try { renderAll(); } catch {}
+      document.getElementById('updated-label').textContent = 'Updated ' + ago(cached.asOf) + ' · refreshing…';
+    }
+    const fresh = await fetchData();
+    if (fresh) { salesData = fresh; renderAll(); }
   })();
 </script>
 </body>
