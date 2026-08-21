@@ -480,9 +480,26 @@ export default async function handler(req, res) {
         'num_associated_deals', 'hs_latest_meeting_activity'
       ];
 
-      const contacts = await fetchAll(hsToken, 'contacts', [
-        { propertyName: 'createdate', operator: 'GTE', value: since }
-      ], props, [{ propertyName: 'createdate', direction: 'DESCENDING' }], 5);
+      // Webinar view searches by CONVERSION event (not create date) — a webinar
+      // lead is often an older contact who just registered. Two searches because
+      // HubSpot ANDs filters inside one group.
+      let contacts;
+      if (onlyWebinar) {
+        const [byFirst, byRecent] = await Promise.all([
+          fetchAll(hsToken, 'contacts', [
+            { propertyName: 'first_conversion_event_name', operator: 'CONTAINS_TOKEN', value: 'webinar' }
+          ], props, [{ propertyName: 'createdate', direction: 'DESCENDING' }], 3),
+          fetchAll(hsToken, 'contacts', [
+            { propertyName: 'recent_conversion_event_name', operator: 'CONTAINS_TOKEN', value: 'webinar' }
+          ], props, [{ propertyName: 'createdate', direction: 'DESCENDING' }], 3)
+        ]);
+        const seen = new Set();
+        contacts = [...byFirst, ...byRecent].filter(c => !seen.has(c.id) && seen.add(c.id));
+      } else {
+        contacts = await fetchAll(hsToken, 'contacts', [
+          { propertyName: 'createdate', operator: 'GTE', value: since }
+        ], props, [{ propertyName: 'createdate', direction: 'DESCENDING' }], 5);
+      }
 
       const WEBINAR_RE = /webinar/i;
       const isWebinar = p =>
@@ -493,6 +510,7 @@ export default async function handler(req, res) {
 
       let base = contacts.map(c => ({ id: c.id, p: c.properties }));
       if (onlyWebinar) base = base.filter(x => isWebinar(x.p));
+      const truncated = !onlyWebinar && contacts.length >= 500;
 
       // Deals for the contacts that have any (association + batch read)
       const withDeals = base.filter(x => parseInt(x.p.num_associated_deals || 0, 10) > 0).slice(0, 60);
@@ -604,7 +622,8 @@ export default async function handler(req, res) {
       res.setHeader('Cache-Control', 's-maxage=300, stale-while-revalidate=900');
       return res.status(200).json({
         days, filter: onlyWebinar ? 'webinar' : 'all',
-        total: n,
+        total: n, truncated,
+        utm_tagged: rows.filter(r2 => r2.utm_source || r2.utm_campaign).length,
         webinar_leads: rows.filter(r2 => r2.is_webinar).length,
         funnel,
         median_days_to_contact: ttc.length ? ttc[Math.floor(ttc.length / 2)] : null,
