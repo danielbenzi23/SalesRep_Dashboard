@@ -1041,9 +1041,15 @@
           </div>`).join('')}
       </div>
       <div style="font-size:11px;color:#888780;margin-top:8px">
-        ${d.total} leads in the last ${d.days} days${d.filter === 'webinar' ? ' · webinar-sourced only' : ` · ${d.webinar_leads} from webinars`}
+        ${d.filter === 'webinar'
+          ? `${d.total} webinar leads (all time, by conversion event)`
+          : `${d.total} leads created in the last ${d.days} days${d.truncated ? ' (capped at 500 — narrow the range for full coverage)' : ''}`}
         ${d.median_days_to_contact != null ? ` · median ${d.median_days_to_contact}d to first contact` : ''}
-      </div>`;
+        ${d.utm_tagged != null ? ` · ${d.utm_tagged} with UTM tags` : ''}
+      </div>
+      ${d.utm_tagged === 0 ? `<div style="margin-top:8px;padding:8px 12px;background:#FAEEDA;border-radius:8px;font-size:11px;color:#633806">
+        ⚠ No UTM parameters on any of these contacts — campaign attribution will stay empty until the tracking gap is fixed.
+      </div>` : ''}`;
 
     const srcRows = (d.by_source || []).slice(0, 10);
     document.getElementById('lj-sources').innerHTML = srcRows.length ? `<table>
