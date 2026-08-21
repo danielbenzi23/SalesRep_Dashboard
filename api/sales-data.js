@@ -59,6 +59,29 @@ async function fetchAll(token, objectType, filters, properties, sorts = null, ma
   return out;
 }
 
+// Associated object ids (e.g. deals for a contact)
+async function hsAssociations(token, fromType, fromId, toType) {
+  const r = await fetch(`https://api.hubapi.com/crm/v4/objects/${fromType}/${fromId}/associations/${toType}?limit=25`, {
+    headers: { Authorization: `Bearer ${token}` }
+  });
+  if (!r.ok) return [];
+  const j = await r.json();
+  return (j.results || []).map(x => x.toObjectId);
+}
+
+// Batch-read records by id
+async function hsBatchRead(token, objectType, ids, properties) {
+  if (!ids || !ids.length) return [];
+  const r = await fetch(`https://api.hubapi.com/crm/v3/objects/${objectType}/batch/read`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ inputs: ids.slice(0, 50).map(id => ({ id: String(id) })), properties })
+  });
+  if (!r.ok) return [];
+  const j = await r.json();
+  return (j.results || []).map(x => ({ id: x.id, ...x.properties }));
+}
+
 function quarterRange(d = new Date()) {
   const y = d.getUTCFullYear();
   const m = d.getUTCMonth();
@@ -436,6 +459,165 @@ export default async function handler(req, res) {
     }
   }
 
+  // ===== LEAD JOURNEY =====
+  // Every contact created in the window: where they came from (UTMs + source),
+  // what happened after (first touch, contacted, lifecycle), and whether they
+  // turned into a deal. ?filter=webinar narrows to webinar-sourced leads.
+  if (urlObj.searchParams.get('action') === 'lead_journey') {
+    try {
+      const days = Math.min(365, parseInt(urlObj.searchParams.get('days') || '90', 10) || 90);
+      const onlyWebinar = urlObj.searchParams.get('filter') === 'webinar';
+      const since = new Date(Date.now() - days * 86400000).toISOString();
+
+      const props = [
+        'firstname', 'lastname', 'email', 'company', 'jobtitle', 'createdate',
+        'hs_analytics_source', 'hs_analytics_source_data_1', 'hs_analytics_source_data_2',
+        'utm_source', 'utm_medium', 'utm_campaign', 'utm_content', 'utm_term',
+        'first_conversion_event_name', 'first_conversion_date',
+        'recent_conversion_event_name', 'recent_conversion_date', 'num_conversion_events',
+        'notes_last_contacted', 'num_contacted_notes', 'hs_sales_email_last_replied',
+        'lifecyclestage', 'hs_lead_status', 'hubspot_owner_id',
+        'num_associated_deals', 'hs_latest_meeting_activity'
+      ];
+
+      const contacts = await fetchAll(hsToken, 'contacts', [
+        { propertyName: 'createdate', operator: 'GTE', value: since }
+      ], props, [{ propertyName: 'createdate', direction: 'DESCENDING' }], 5);
+
+      const WEBINAR_RE = /webinar/i;
+      const isWebinar = p =>
+        WEBINAR_RE.test(p.first_conversion_event_name || '') ||
+        WEBINAR_RE.test(p.recent_conversion_event_name || '') ||
+        WEBINAR_RE.test(p.utm_campaign || '') ||
+        WEBINAR_RE.test(p.utm_content || '');
+
+      let base = contacts.map(c => ({ id: c.id, p: c.properties }));
+      if (onlyWebinar) base = base.filter(x => isWebinar(x.p));
+
+      // Deals for the contacts that have any (association + batch read)
+      const withDeals = base.filter(x => parseInt(x.p.num_associated_deals || 0, 10) > 0).slice(0, 60);
+      const dealsByContact = {};
+      await Promise.all(withDeals.map(async x => {
+        try {
+          const ids = await hsAssociations(hsToken, 'contacts', x.id, 'deals');
+          if (!ids.length) return;
+          const deals = await hsBatchRead(hsToken, 'deals', ids,
+            ['dealname', 'dealstage', 'pipeline', 'amount', 'createdate', 'closedate', 'hubspot_owner_id']);
+          dealsByContact[x.id] = deals;
+        } catch {}
+      }));
+
+      const SOURCE_LABELS = {
+        ORGANIC_SEARCH: 'Organic Search', PAID_SEARCH: 'Paid Search', EMAIL_MARKETING: 'Email Marketing',
+        SOCIAL_MEDIA: 'Organic Social', PAID_SOCIAL: 'Paid Social', REFERRALS: 'Referrals',
+        OTHER_CAMPAIGNS: 'Other Campaigns', DIRECT_TRAFFIC: 'Direct Traffic', OFFLINE: 'Offline Sources',
+        AI_REFERRALS: 'AI Referrals'
+      };
+      const dayDiff = (a, b) => (a && b) ? Math.round((Date.parse(b) - Date.parse(a)) / 86400000) : null;
+
+      const rows = base.map(({ id, p }) => {
+        const created = p.createdate || null;
+        const firstConv = p.first_conversion_date || null;
+        const lastTouch = p.notes_last_contacted || null;
+        const deals = dealsByContact[id] || [];
+        const won = deals.find(d => WON_STAGE_IDS.includes(d.dealstage));
+        const best = won || deals[0] || null;
+        // Journey stages actually reached, in order
+        const stages = ['Created'];
+        if (firstConv) stages.push('Converted');
+        if (lastTouch) stages.push('Contacted');
+        if (p.hs_latest_meeting_activity) stages.push('Meeting');
+        if (best) stages.push('Deal');
+        if (won) stages.push('Won');
+        return {
+          id,
+          name: [p.firstname, p.lastname].filter(Boolean).join(' ') || p.email || '(no name)',
+          email: p.email || null,
+          company: p.company || null,
+          jobtitle: p.jobtitle || null,
+          created_at: created,
+          source: SOURCE_LABELS[p.hs_analytics_source] || p.hs_analytics_source || null,
+          source_detail: p.hs_analytics_source_data_1 || null,
+          utm_source: p.utm_source || null,
+          utm_medium: p.utm_medium || null,
+          utm_campaign: p.utm_campaign || null,
+          utm_content: p.utm_content || null,
+          utm_term: p.utm_term || null,
+          first_conversion: p.first_conversion_event_name || null,
+          first_conversion_date: firstConv,
+          last_conversion: p.recent_conversion_event_name || null,
+          last_conversion_date: p.recent_conversion_date || null,
+          conversions: parseInt(p.num_conversion_events || 0, 10) || 0,
+          is_webinar: isWebinar(p),
+          first_contact_at: lastTouch,
+          days_to_first_contact: dayDiff(created, lastTouch),
+          times_contacted: parseInt(p.num_contacted_notes || 0, 10) || 0,
+          replied: !!p.hs_sales_email_last_replied,
+          had_meeting: !!p.hs_latest_meeting_activity,
+          lifecyclestage: p.lifecyclestage || null,
+          lead_status: p.hs_lead_status || null,
+          owner: OWNER_ID_TO_NAME[p.hubspot_owner_id] || null,
+          stages,
+          deal: best ? {
+            name: best.dealname || '(no name)',
+            stage: STAGE_NAMES[best.dealstage] || best.dealstage,
+            amount: parseFloat(best.amount) || 0,
+            created_at: best.createdate || null,
+            won: !!won,
+            days_to_deal: dayDiff(created, best.createdate),
+            url: `https://app.hubspot.com/contacts/2675906/record/0-3/${best.id}`
+          } : null,
+          deal_count: deals.length,
+          hubspot_url: `https://app.hubspot.com/contacts/2675906/record/0-1/${id}`
+        };
+      });
+
+      // Funnel + attribution rollups
+      const n = rows.length;
+      const funnel = {
+        created: n,
+        converted: rows.filter(r2 => r2.first_conversion_date).length,
+        contacted: rows.filter(r2 => r2.first_contact_at).length,
+        meeting: rows.filter(r2 => r2.had_meeting).length,
+        deal: rows.filter(r2 => r2.deal).length,
+        won: rows.filter(r2 => r2.deal && r2.deal.won).length
+      };
+      const bySource = {};
+      for (const r2 of rows) {
+        const key = r2.utm_source || r2.source || 'Unknown';
+        if (!bySource[key]) bySource[key] = { source: key, leads: 0, contacted: 0, deals: 0, won: 0, value: 0 };
+        bySource[key].leads++;
+        if (r2.first_contact_at) bySource[key].contacted++;
+        if (r2.deal) { bySource[key].deals++; bySource[key].value += r2.deal.amount; }
+        if (r2.deal && r2.deal.won) bySource[key].won++;
+      }
+      const byCampaign = {};
+      for (const r2 of rows.filter(x => x.utm_campaign)) {
+        const key = r2.utm_campaign;
+        if (!byCampaign[key]) byCampaign[key] = { campaign: key, source: r2.utm_source || null, leads: 0, deals: 0, won: 0, value: 0 };
+        byCampaign[key].leads++;
+        if (r2.deal) { byCampaign[key].deals++; byCampaign[key].value += r2.deal.amount; }
+        if (r2.deal && r2.deal.won) byCampaign[key].won++;
+      }
+      const ttc = rows.filter(r2 => r2.days_to_first_contact != null).map(r2 => r2.days_to_first_contact).sort((a, b) => a - b);
+
+      res.setHeader('Cache-Control', 's-maxage=300, stale-while-revalidate=900');
+      return res.status(200).json({
+        days, filter: onlyWebinar ? 'webinar' : 'all',
+        total: n,
+        webinar_leads: rows.filter(r2 => r2.is_webinar).length,
+        funnel,
+        median_days_to_contact: ttc.length ? ttc[Math.floor(ttc.length / 2)] : null,
+        by_source: Object.values(bySource).sort((a, b) => b.leads - a.leads),
+        by_campaign: Object.values(byCampaign).sort((a, b) => b.leads - a.leads).slice(0, 20),
+        rows: rows.slice(0, 300),
+        fetchedAt: new Date().toISOString()
+      });
+    } catch (e) {
+      return res.status(500).json({ error: 'lead_journey failed', detail: e.message });
+    }
+  }
+
   // ===== FORM SUBMISSIONS TRACKER =====
   // Mirrors the "form submissions" Google Sheet: every contact with a recent
   // conversion (website form or meeting link), whether sales has contacted them
@@ -522,14 +704,23 @@ export default async function handler(req, res) {
         };
       });
 
-      const missed = rows.filter(r2 => !r2.contacted).length;
-      const respTimes = rows.filter(r2 => r2.days_to_contact != null).map(r2 => r2.days_to_contact).sort((a, b) => a - b);
+      // DS Sales only: the 4 active sellers + unassigned submissions (nobody
+      // picked those up yet, which is the whole point of this tab).
+      // Everything owned by Partner Success / CS (Chris Hart, Sharon Peacock,
+      // Woody Robertson, David Cook, Beto Cervantes, Cody) is filtered out.
+      const DS_FORM_OWNERS = new Set(['118972528', '84179396', '90988586', '30458491']);
+      const filtered = rows.filter(r2 => !r2.owner_id || DS_FORM_OWNERS.has(String(r2.owner_id)));
+      const hiddenCount = rows.length - filtered.length;
+
+      const missed = filtered.filter(r2 => !r2.contacted).length;
+      const respTimes = filtered.filter(r2 => r2.days_to_contact != null).map(r2 => r2.days_to_contact).sort((a, b) => a - b);
       const medianResponse = respTimes.length ? respTimes[Math.floor(respTimes.length / 2)] : null;
       // Submissions move slowly — cache at the edge so reloads are instant
       res.setHeader('Cache-Control', 's-maxage=300, stale-while-revalidate=600');
       return res.status(200).json({
-        days, total: rows.length, not_contacted: missed, median_days_to_contact: medianResponse,
-        rows, fetchedAt: new Date().toISOString()
+        days, total: filtered.length, not_contacted: missed, median_days_to_contact: medianResponse,
+        hidden_non_ds: hiddenCount,
+        rows: filtered, fetchedAt: new Date().toISOString()
       });
     } catch (e) {
       return res.status(500).json({ error: e.message });
