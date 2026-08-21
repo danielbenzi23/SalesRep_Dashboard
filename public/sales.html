@@ -222,6 +222,7 @@
     <div class="tab" data-tab="emails">Emails</div>
     <div class="tab" data-tab="leads">Leads</div>
     <div class="tab" data-tab="forms">Forms</div>
+    <div class="tab" data-tab="journey">Lead journey</div>
     <div class="tab" data-tab="signals">Signals</div>
     <div class="tab" data-tab="buyer-intel">Buyer intel</div>
     <div class="tab" data-tab="dossier">Dossier</div>
@@ -460,6 +461,52 @@
             <button id="forms-next" style="padding:6px 14px;border:0.5px solid rgba(0,0,0,0.15);border-radius:8px;background:#fff;cursor:pointer;font-size:12px">Next →</button>
           </div>
         </div>
+      </div>
+    </div>
+
+    <!-- LEAD JOURNEY -->
+    <div data-panel="journey" style="display:none">
+      <div class="panel" style="margin-bottom:14px">
+        <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px">
+          <div>
+            <div class="panel-title">🛤️ Lead journey</div>
+            <div class="panel-sub">Every new contact: where they came from (UTMs), what happened after, and whether it became a deal.</div>
+          </div>
+          <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+            <div style="display:flex;background:#F1EFE8;border-radius:8px;padding:2px">
+              <button id="lj-tab-all" onclick="setLjFilter('all')" style="border:0;border-radius:6px;padding:5px 12px;font-size:12px;cursor:pointer;background:#fff;font-weight:500">All leads</button>
+              <button id="lj-tab-webinar" onclick="setLjFilter('webinar')" style="border:0;border-radius:6px;padding:5px 12px;font-size:12px;cursor:pointer;background:transparent">🎥 Webinar</button>
+            </div>
+            <select id="lj-days" onchange="loadJourney(true)" style="padding:6px 10px;border:0.5px solid rgba(0,0,0,0.15);border-radius:6px;font-size:12px">
+              <option value="30">Last 30 days</option>
+              <option value="90" selected>Last 90 days</option>
+              <option value="180">Last 180 days</option>
+              <option value="365">Last 12 months</option>
+            </select>
+            <select id="lj-stage" onchange="renderJourneyRows()" style="padding:6px 10px;border:0.5px solid rgba(0,0,0,0.15);border-radius:6px;font-size:12px">
+              <option value="all" selected>All stages</option>
+              <option value="deal">Became a deal</option>
+              <option value="won">Won</option>
+              <option value="nocontact">Never contacted</option>
+            </select>
+            <input type="text" id="lj-search" oninput="renderJourneyRows()" placeholder="Search…" style="padding:6px 10px;border:0.5px solid rgba(0,0,0,0.15);border-radius:6px;font-size:12px;width:150px" />
+          </div>
+        </div>
+        <div id="lj-funnel" class="loading" style="margin-top:12px">Loading…</div>
+      </div>
+      <div class="grid-2" style="margin-bottom:14px">
+        <div class="panel">
+          <div class="panel-title" style="font-size:13px">By source (UTM)</div>
+          <div id="lj-sources" class="loading">Loading…</div>
+        </div>
+        <div class="panel">
+          <div class="panel-title" style="font-size:13px">By campaign (utm_campaign)</div>
+          <div id="lj-campaigns" class="loading">Loading…</div>
+        </div>
+      </div>
+      <div class="panel">
+        <div class="panel-title" id="lj-table-title" style="font-size:13px">Leads</div>
+        <div id="lj-table" class="loading">Loading…</div>
       </div>
     </div>
 
@@ -945,6 +992,136 @@
     if (days > 0) return `in ${days}d`;
     return `${Math.abs(days)}d overdue`;
   }
+
+  // ---- Lead journey (created → touched → deal, with UTM attribution) ----
+  let ljFilter = 'all';
+  let ljCache = {};
+  function setLjFilter(f) {
+    ljFilter = f;
+    document.getElementById('lj-tab-all').style.background = f === 'all' ? '#fff' : 'transparent';
+    document.getElementById('lj-tab-all').style.fontWeight = f === 'all' ? '500' : '400';
+    document.getElementById('lj-tab-webinar').style.background = f === 'webinar' ? '#fff' : 'transparent';
+    document.getElementById('lj-tab-webinar').style.fontWeight = f === 'webinar' ? '500' : '400';
+    loadJourney();
+  }
+  window.setLjFilter = setLjFilter;
+
+  async function loadJourney(force) {
+    const days = document.getElementById('lj-days').value;
+    const key = `${ljFilter}|${days}`;
+    if (force) delete ljCache[key];
+    let d = ljCache[key];
+    if (!d) {
+      document.getElementById('lj-funnel').innerHTML = '<div class="loading">Loading…</div>';
+      document.getElementById('lj-table').innerHTML = '<div class="loading">Loading…</div>';
+      try {
+        const r = await fetch(`/api/sales-data?action=lead_journey&days=${days}${ljFilter === 'webinar' ? '&filter=webinar' : ''}`);
+        if (!r.ok) { const j = await r.json().catch(() => ({})); document.getElementById('lj-funnel').innerHTML = `<div style="color:#791F1F">${j.detail || j.error || r.status}</div>`; return; }
+        d = await r.json();
+        ljCache[key] = d;
+      } catch (e) { document.getElementById('lj-funnel').innerHTML = `<div style="color:#791F1F">${e.message}</div>`; return; }
+    }
+    ljData = d;
+
+    // Funnel: created → converted → contacted → meeting → deal → won
+    const f = d.funnel;
+    const steps = [
+      { k: 'Created', v: f.created }, { k: 'Converted', v: f.converted },
+      { k: 'Contacted', v: f.contacted }, { k: 'Meeting', v: f.meeting },
+      { k: 'Deal', v: f.deal }, { k: 'Won', v: f.won }
+    ];
+    const pct = v => f.created > 0 ? Math.round((v / f.created) * 100) : 0;
+    document.getElementById('lj-funnel').innerHTML = `
+      <div style="display:grid;grid-template-columns:repeat(6,1fr);gap:8px">
+        ${steps.map((s, i) => `
+          <div class="stat" style="padding:12px">
+            <div class="lbl">${s.k}</div>
+            <div class="val" style="font-size:22px">${s.v}</div>
+            <div style="font-size:11px;color:#888780;margin-top:2px">${pct(s.v)}% of created${i > 0 && steps[i-1].v > 0 ? ` · ${Math.round((s.v / steps[i-1].v) * 100)}% step` : ''}</div>
+          </div>`).join('')}
+      </div>
+      <div style="font-size:11px;color:#888780;margin-top:8px">
+        ${d.total} leads in the last ${d.days} days${d.filter === 'webinar' ? ' · webinar-sourced only' : ` · ${d.webinar_leads} from webinars`}
+        ${d.median_days_to_contact != null ? ` · median ${d.median_days_to_contact}d to first contact` : ''}
+      </div>`;
+
+    const srcRows = (d.by_source || []).slice(0, 10);
+    document.getElementById('lj-sources').innerHTML = srcRows.length ? `<table>
+      <thead><tr><th>Source</th><th style="text-align:right">Leads</th><th style="text-align:right">Contacted</th><th style="text-align:right">Deals</th><th style="text-align:right">Value</th></tr></thead>
+      <tbody>${srcRows.map(s => `<tr>
+        <td>${escapeHtml(s.source)}</td>
+        <td style="text-align:right">${s.leads}</td>
+        <td style="text-align:right"><span class="meta">${s.contacted}</span></td>
+        <td style="text-align:right">${s.deals}${s.won ? ` <span class="badge" style="background:#E1F5EE;color:#0F6E56">${s.won}W</span>` : ''}</td>
+        <td style="text-align:right">${s.value ? fmtMoneyK(s.value) : '—'}</td>
+      </tr>`).join('')}</tbody></table>` : '<div style="color:#888780">No data</div>';
+
+    const campRows = (d.by_campaign || []).slice(0, 10);
+    document.getElementById('lj-campaigns').innerHTML = campRows.length ? `<table>
+      <thead><tr><th>Campaign</th><th>Source</th><th style="text-align:right">Leads</th><th style="text-align:right">Deals</th><th style="text-align:right">Value</th></tr></thead>
+      <tbody>${campRows.map(s => `<tr>
+        <td>${escapeHtml(s.campaign)}</td>
+        <td><span class="meta">${escapeHtml(s.source || '—')}</span></td>
+        <td style="text-align:right">${s.leads}</td>
+        <td style="text-align:right">${s.deals}${s.won ? ` <span class="badge" style="background:#E1F5EE;color:#0F6E56">${s.won}W</span>` : ''}</td>
+        <td style="text-align:right">${s.value ? fmtMoneyK(s.value) : '—'}</td>
+      </tr>`).join('')}</tbody></table>` : '<div style="color:#888780">No UTM campaigns tagged in this period</div>';
+
+    renderJourneyRows();
+  }
+  window.loadJourney = loadJourney;
+
+  let ljData = null;
+  function renderJourneyRows() {
+    if (!ljData) return;
+    const q = (document.getElementById('lj-search').value || '').toLowerCase();
+    const stage = document.getElementById('lj-stage').value;
+    let rows = ljData.rows || [];
+    if (stage === 'deal') rows = rows.filter(r => r.deal);
+    else if (stage === 'won') rows = rows.filter(r => r.deal && r.deal.won);
+    else if (stage === 'nocontact') rows = rows.filter(r => !r.first_contact_at);
+    if (q) rows = rows.filter(r => [r.name, r.email, r.company, r.utm_campaign, r.first_conversion].some(v => (v || '').toLowerCase().includes(q)));
+
+    document.getElementById('lj-table-title').textContent = `Leads (${rows.length})`;
+    const el = document.getElementById('lj-table');
+    if (!rows.length) { el.innerHTML = '<div style="color:#888780">No leads match these filters</div>'; return; }
+
+    // Journey chips: Created → Converted → Contacted → Meeting → Deal → Won
+    const chip = (label, on) => `<span style="display:inline-block;padding:2px 7px;border-radius:999px;font-size:10px;margin-right:3px;${on ? 'background:#E6F1FB;color:#0C447C;font-weight:500' : 'background:#F1EFE8;color:#B8B6AE'}">${label}</span>`;
+    el.innerHTML = `<table>
+      <thead><tr>
+        <th>Lead</th><th>Created</th><th>Source / UTM</th><th>First conversion</th>
+        <th>Journey</th><th style="text-align:right">To contact</th><th>Deal</th>
+      </tr></thead>
+      <tbody>${rows.slice(0, 200).map(r => {
+        const has = s => (r.stages || []).includes(s);
+        const utm = [r.utm_source, r.utm_medium].filter(Boolean).join(' / ');
+        return `<tr${!r.first_contact_at ? ' style="background:#FCF3F3"' : ''}>
+          <td>
+            <a href="${r.hubspot_url}" target="_blank" style="color:#0C447C;text-decoration:none;font-weight:500">${escapeHtml(r.name)}</a>
+            ${r.is_webinar ? ' <span class="badge" style="background:#EFE7FB;color:#5B3FA8">webinar</span>' : ''}
+            <div class="meta">${escapeHtml(r.company || r.email || '')}</div>
+          </td>
+          <td><span class="meta">${fmtDate(r.created_at)}</span></td>
+          <td>
+            ${escapeHtml(r.source || '—')}
+            ${utm ? `<div class="meta">${escapeHtml(utm)}</div>` : ''}
+            ${r.utm_campaign ? `<div class="meta" style="color:#5B3FA8">${escapeHtml(r.utm_campaign)}</div>` : ''}
+          </td>
+          <td><span class="meta">${escapeHtml((r.first_conversion || '—').slice(0, 46))}</span></td>
+          <td style="white-space:nowrap">
+            ${chip('Created', true)}${chip('Conv', has('Converted'))}${chip('Contact', has('Contacted'))}${chip('Meet', has('Meeting'))}${chip('Deal', has('Deal'))}${chip('Won', has('Won'))}
+          </td>
+          <td style="text-align:right">${r.days_to_first_contact != null ? `${r.days_to_first_contact}d` : '<span style="color:#A32D2D">never</span>'}</td>
+          <td>${r.deal
+            ? `<a href="${r.deal.url}" target="_blank" style="color:#0C447C;text-decoration:none">${escapeHtml(r.deal.name.slice(0, 30))}</a>
+               <div class="meta">${r.deal.stage} · ${fmtMoneyK(r.deal.amount)}${r.deal.days_to_deal != null ? ` · ${r.deal.days_to_deal}d` : ''}</div>`
+            : '<span class="meta">—</span>'}</td>
+        </tr>`;
+      }).join('')}</tbody>
+    </table>${rows.length > 200 ? `<div style="font-size:11px;color:#888780;margin-top:8px">Showing first 200 of ${rows.length}</div>` : ''}`;
+  }
+  window.renderJourneyRows = renderJourneyRows;
 
   // ---- Pipeline view (HubSpot-style deal amounts + quarter/pipeline/owner filters) ----
   let pvScope = 'open';
@@ -3270,6 +3447,7 @@
       if (target === 'emails') loadEmails();
       if (target === 'leads') loadLeads();
       if (target === 'forms') loadForms();
+      if (target === 'journey') loadJourney();
       if (target === 'pipeline') loadPipelineView();
       if (target === 'signals') loadSignals();
       if (target === 'meeting-intel') loadMeetingIntel();
