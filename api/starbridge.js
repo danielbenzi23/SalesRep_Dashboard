@@ -187,20 +187,98 @@ async function hsBatchRead(hsToken, obj, ids, properties) {
   return (j.results || []).map(x => ({ id: x.id, ...x.properties }));
 }
 
+// Meeting/agenda noise that shows up appended to institution names in signals
+const MEETING_NOISE = /\b(academic senate|board of (trustees|regents|education|supervisors|governors)|board meeting|regular meeting|special meeting|committee meeting|committee|curriculum|organizational|agenda and minutes|agenda|minutes|meeting|notice|packet|revised|executive|district technology|institutional effectiveness|student success|session)\b/gi;
+// Words that usually END the institution name
+const INSTITUTION_TAIL = /^(.*?\b(?:community college district|community college|college|university|universities|institute|institution|school district|school|district|system|academy|seminary|conservatory)\b)/i;
+
+// Contract/purchase signals read "… at <Institution> from <Vendor>"
+const CONTRACT_PATTERN = /\bat\s+(.+?)\s+from\b/i;
+// A candidate made only of these words would match the wrong company
+const GENERIC_WORDS = new Set(['board', 'of', 'the', 'district', 'committee', 'curriculum',
+  'organizational', 'meeting', 'agenda', 'minutes', 'purchase', 'at', 'from', 'senate',
+  'academic', 'executive', 'revised', 'regular', 'special', 'notice', 'packet', 'council',
+  'education', 'higher', 'and', 'session', 'trustees', 'regents', 'supervisors', 'governors',
+  'technology', 'institutional', 'effectiveness', 'student', 'success', 'system', 'software',
+  'renewal', 'services', 'service', 'contract', 'award', 'for', 'new', 'general', 'state',
+  // Institution keywords are meaningless on their own ("University", "College")
+  'university', 'universities', 'college', 'school', 'institute', 'institution', 'academy',
+  'seminary', 'conservatory', 'community', 'administration']);
+const isTooGeneric = s => s.toLowerCase().replace(/[^a-z0-9 ]/g, ' ').split(/\s+/)
+  .filter(Boolean).every(w => GENERIC_WORDS.has(w));
+
+// Ordered list of names to try against HubSpot, longest (most specific) first
+function companyNameCandidates(raw) {
+  const name = String(raw || '').replace(/\s+/g, ' ').trim();
+  if (!name) return [];
+  const out = [name];
+  const contract = name.match(CONTRACT_PATTERN);
+  if (contract && contract[1]) out.push(contract[1].trim());
+  const tail = name.match(INSTITUTION_TAIL);
+  if (tail && tail[1] && tail[1].length < name.length) out.push(tail[1].trim());
+  const stripped = name.replace(MEETING_NOISE, ' ').replace(/\s+/g, ' ').replace(/[-–—,:;|]+\s*$/, '').trim();
+  if (stripped && stripped !== name) {
+    out.push(stripped);
+    const strippedTail = stripped.match(INSTITUTION_TAIL);
+    if (strippedTail && strippedTail[1]) out.push(strippedTail[1].trim());
+  }
+  const words = name.split(' ');
+  if (words.length > 2) out.push(words.slice(0, 2).join(' '));
+  // Dedupe, drop junk/generic, keep order (most specific first)
+  const seen = new Set();
+  return out
+    .map(s => s.replace(/[-–—,:;|]+\s*$/, '').trim())
+    .filter(s => s.length >= 4 && !isTooGeneric(s) && !seen.has(s.toLowerCase()) && seen.add(s.toLowerCase()))
+    .slice(0, 5);
+}
+
+// HubSpot stores either "CA" or "California" — normalize to the 2-letter code
+const STATE_NAME_TO_CODE = {
+  alabama: 'AL', alaska: 'AK', arizona: 'AZ', arkansas: 'AR', california: 'CA', colorado: 'CO',
+  connecticut: 'CT', delaware: 'DE', 'district of columbia': 'DC', florida: 'FL', georgia: 'GA',
+  hawaii: 'HI', idaho: 'ID', illinois: 'IL', indiana: 'IN', iowa: 'IA', kansas: 'KS', kentucky: 'KY',
+  louisiana: 'LA', maine: 'ME', maryland: 'MD', massachusetts: 'MA', michigan: 'MI', minnesota: 'MN',
+  mississippi: 'MS', missouri: 'MO', montana: 'MT', nebraska: 'NE', nevada: 'NV', 'new hampshire': 'NH',
+  'new jersey': 'NJ', 'new mexico': 'NM', 'new york': 'NY', 'north carolina': 'NC', 'north dakota': 'ND',
+  ohio: 'OH', oklahoma: 'OK', oregon: 'OR', pennsylvania: 'PA', 'rhode island': 'RI',
+  'south carolina': 'SC', 'south dakota': 'SD', tennessee: 'TN', texas: 'TX', utah: 'UT',
+  vermont: 'VT', virginia: 'VA', washington: 'WA', 'west virginia': 'WV', wisconsin: 'WI', wyoming: 'WY'
+};
+function normalizeState(v) {
+  const s = String(v || '').trim();
+  if (!s) return '';
+  if (/^[A-Za-z]{2}$/.test(s)) return s.toUpperCase();
+  return STATE_NAME_TO_CODE[s.toLowerCase()] || '';
+}
+
 // Fetch HubSpot company + contacts + deals + resolve ownership per the
 // Weekly Signal Dossiers routing rules (company owner supersedes contact;
 // closed-won = skip flag; open deal = keep owner; else Cody→Charles).
 async function fetchHubSpotCompanyData(hsToken, schoolName) {
   const out = { company: null, contacts: [], deals: [], owner_name: null, destination_owner: null, deal_state: 'none', skip_reason: null };
   try {
-    const cr = await hsSearch(hsToken, 'companies', {
-      filterGroups: [
-        { filters: [{ propertyName: 'name', operator: 'CONTAINS_TOKEN', value: schoolName }] }
-      ],
-      properties: ['name', 'domain', 'hubspot_owner_id', 'lifecyclestage', 'city', 'state'],
-      limit: 3
-    });
-    const company = (cr.results || [])[0];
+    // Signal feeds hand us meeting/agenda titles ("Yuba College Academic Senate
+    // Agenda and Minutes"), and a CONTAINS_TOKEN on the whole phrase matches
+    // nothing. Try progressively shorter candidates until HubSpot finds the
+    // institution, so ownership routing works even for those rows.
+    let company = null;
+    for (const candidate of companyNameCandidates(schoolName)) {
+      const cr = await hsSearch(hsToken, 'companies', {
+        filterGroups: [
+          { filters: [{ propertyName: 'name', operator: 'CONTAINS_TOKEN', value: candidate }] }
+        ],
+        properties: ['name', 'domain', 'hubspot_owner_id', 'lifecyclestage', 'city', 'state'],
+        limit: 3
+      });
+      const hits = cr.results || [];
+      if (hits.length) {
+        // Prefer the shortest name (closest to the bare institution)
+        company = hits.slice().sort((a, b) =>
+          (a.properties.name || '').length - (b.properties.name || '').length)[0];
+        out.matched_via = candidate === schoolName ? 'full_name' : `candidate: ${candidate}`;
+        break;
+      }
+    }
     if (!company) return out;
     out.company = { id: company.id, ...company.properties };
     const ownerId = company.properties.hubspot_owner_id;
@@ -478,8 +556,11 @@ async function generateDossier(buyerId, buyerName) {
   // Ownership: HubSpot routing first; if the school has NO owner in HubSpot,
   // fall back to the sales territory map by state. State cascade:
   // Starbridge StateCode -> Claude-inferred state -> state at end of context_line.
+  // HubSpot's company state comes BEFORE the AI-inferred one: it is ground
+  // truth and it keeps working when the Claude call fails (e.g. no credits).
   const stateCode =
     String(attributes?.StateCode || '').toUpperCase().trim() ||
+    normalizeState(hubspot?.company?.state) ||
     String(dossier?.state || '').toUpperCase().trim() ||
     ((String(dossier?.context_line || '').match(/\b([A-Z]{2})\s*$/) || [])[1] || '');
   const territoryRep = STATE_TO_REP[stateCode] || null;
@@ -493,6 +574,8 @@ async function generateDossier(buyerId, buyerName) {
     prepared_for: preparedFor,
     state_used: stateCode || null,
     _assigned_via: hubspot?.destination_owner ? 'hubspot' : (territoryRep ? `territory (${stateCode})` : null),
+    _hs_matched: hubspot?.company?.name || null,
+    _hs_matched_via: hubspot?.matched_via || null,
     owner_name: hubspot?.owner_name || null,
     deal_state: hubspot?.deal_state || 'unknown',
     hubspot_contacts: hubspot?.contacts || [],
