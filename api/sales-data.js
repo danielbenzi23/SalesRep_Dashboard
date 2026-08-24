@@ -480,6 +480,22 @@ export default async function handler(req, res) {
         'num_associated_deals', 'hs_latest_meeting_activity'
       ];
 
+      // True totals for the window (cheap: limit 1, we only read `total`).
+      // The row list below is capped, so never derive coverage from it.
+      const countOnly = async filters => {
+        try {
+          const r = await hsSearch(hsToken, 'contacts', { filterGroups: [{ filters }], limit: 1, properties: [] });
+          return r.total || 0;
+        } catch { return null; }
+      };
+      const createdFilter = { propertyName: 'createdate', operator: 'GTE', value: since };
+      const [totalCreated, totalPaid, totalWithUtmSource, totalWithUtmCampaign] = await Promise.all([
+        countOnly([createdFilter]),
+        countOnly([createdFilter, { propertyName: 'hs_analytics_source', operator: 'IN', values: ['PAID_SEARCH', 'PAID_SOCIAL'] }]),
+        countOnly([createdFilter, { propertyName: 'utm_source', operator: 'HAS_PROPERTY' }]),
+        countOnly([createdFilter, { propertyName: 'utm_campaign', operator: 'HAS_PROPERTY' }])
+      ]);
+
       // Webinar view searches by CONVERSION event (not create date) — a webinar
       // lead is often an older contact who just registered. Two searches because
       // HubSpot ANDs filters inside one group.
@@ -623,6 +639,13 @@ export default async function handler(req, res) {
       return res.status(200).json({
         days, filter: onlyWebinar ? 'webinar' : 'all',
         total: n, truncated,
+        // Window-wide truths (independent of the row cap above)
+        window_totals: onlyWebinar ? null : {
+          created: totalCreated,
+          paid: totalPaid,
+          with_utm_source: totalWithUtmSource,
+          with_utm_campaign: totalWithUtmCampaign
+        },
         utm_tagged: rows.filter(r2 => r2.utm_source || r2.utm_campaign).length,
         webinar_leads: rows.filter(r2 => r2.is_webinar).length,
         funnel,
