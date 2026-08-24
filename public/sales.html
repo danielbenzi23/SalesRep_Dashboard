@@ -1059,6 +1059,7 @@
           ? `${d.total} webinar leads (all time, by conversion event)`
           : `Showing the ${d.total} most recent${d.truncated ? ` of ${wt ? wt.created : 'all'} created` : ''} · funnel counts refer to these rows`}
         ${d.median_days_to_contact != null ? ` · median ${d.median_days_to_contact}d to first contact` : ''}
+        ${d.customers_excluded ? ` · ${d.customers_excluded} existing customers excluded` : ''}
       </div>${coverage}`;
 
     const srcRows = (d.by_source || []).slice(0, 10);
@@ -1111,7 +1112,15 @@
       </tr></thead>
       <tbody>${rows.slice(0, 200).map(r => {
         const has = s => (r.stages || []).includes(s);
-        const utm = [r.utm_source, r.utm_medium].filter(Boolean).join(' / ');
+        // Show every UTM param present, even when utm_campaign is missing
+        const utmTag = (k, v) => v
+          ? `<span style="display:inline-block;background:#F3EFFA;color:#5B3FA8;border-radius:4px;padding:1px 5px;font-size:10px;margin:1px 3px 1px 0"><b style="font-weight:500">${k}</b>=${escapeHtml(String(v).slice(0, 28))}</span>`
+          : '';
+        const utmTags = [
+          utmTag('source', r.utm_source), utmTag('medium', r.utm_medium),
+          utmTag('campaign', r.utm_campaign), utmTag('content', r.utm_content),
+          utmTag('term', r.utm_term)
+        ].filter(Boolean).join('');
         return `<tr${!r.first_contact_at ? ' style="background:#FCF3F3"' : ''}>
           <td>
             <a href="${r.hubspot_url}" target="_blank" style="color:#0C447C;text-decoration:none;font-weight:500">${escapeHtml(r.name)}</a>
@@ -1121,8 +1130,8 @@
           <td><span class="meta">${fmtDate(r.created_at)}</span></td>
           <td>
             ${escapeHtml(r.source || '—')}
-            ${utm ? `<div class="meta">${escapeHtml(utm)}</div>` : ''}
-            ${r.utm_campaign ? `<div class="meta" style="color:#5B3FA8">${escapeHtml(r.utm_campaign)}</div>` : ''}
+            ${r.source_detail ? `<div class="meta">${escapeHtml(String(r.source_detail).slice(0, 38))}</div>` : ''}
+            ${utmTags ? `<div style="margin-top:3px">${utmTags}</div>` : '<div class="meta" style="color:#B8B6AE">no UTM tags</div>'}
           </td>
           <td><span class="meta">${escapeHtml((r.first_conversion || '—').slice(0, 46))}</span></td>
           <td style="white-space:nowrap">
@@ -2143,10 +2152,15 @@
 
     const missed = rows.filter(r => !r.contacted).length;
     const chip = (n, l, color) => `<div style="background:rgba(255,255,255,.55);border-radius:10px;padding:8px 16px;"><div style="font-weight:700;font-size:18px;color:${color}">${n}</div><div style="font-size:11px;color:#5F5E5A">${l}</div></div>`;
+    const excluded = (formsCache.hidden_non_ds || 0) + (formsCache.hidden_customers || 0);
     document.getElementById('forms-chips').innerHTML =
       chip(rows.length, `submissions (${formsCache.days}d, filtered)`, '#12305B') +
       chip(missed, 'not contacted since submitting', missed ? '#A32D2D' : '#0F6E56') +
-      chip(formsCache.median_days_to_contact ?? '—', 'median days to first touch', '#12305B');
+      chip(formsCache.median_days_to_contact ?? '—', 'median days to first touch', '#12305B') +
+      (excluded ? `<div style="background:rgba(255,255,255,.35);border-radius:10px;padding:8px 16px;">
+        <div style="font-weight:700;font-size:18px;color:#888780">${excluded}</div>
+        <div style="font-size:11px;color:#5F5E5A">hidden · ${formsCache.hidden_non_ds || 0} non-DS Sales, ${formsCache.hidden_customers || 0} customers</div>
+      </div>` : '');
 
     const fmtD = s => s ? new Date(s).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) : '—';
     const t = document.getElementById('forms-table');
