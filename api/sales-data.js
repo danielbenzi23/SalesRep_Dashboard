@@ -526,6 +526,9 @@ export default async function handler(req, res) {
 
       let base = contacts.map(c => ({ id: c.id, p: c.properties }));
       if (onlyWebinar) base = base.filter(x => isWebinar(x.p));
+      // Existing customers are not leads — drop them from the journey
+      const customersDropped = base.filter(x => String(x.p.lifecyclestage || '').toLowerCase() === 'customer').length;
+      base = base.filter(x => String(x.p.lifecyclestage || '').toLowerCase() !== 'customer');
       const truncated = !onlyWebinar && contacts.length >= 500;
 
       // Deals for the contacts that have any (association + batch read)
@@ -638,7 +641,7 @@ export default async function handler(req, res) {
       res.setHeader('Cache-Control', 's-maxage=300, stale-while-revalidate=900');
       return res.status(200).json({
         days, filter: onlyWebinar ? 'webinar' : 'all',
-        total: n, truncated,
+        total: n, truncated, customers_excluded: customersDropped,
         // Window-wide truths (independent of the row cap above)
         window_totals: onlyWebinar ? null : {
           created: totalCreated,
@@ -751,8 +754,12 @@ export default async function handler(req, res) {
       // Everything owned by Partner Success / CS (Chris Hart, Sharon Peacock,
       // Woody Robertson, David Cook, Beto Cervantes, Cody) is filtered out.
       const DS_FORM_OWNERS = new Set(['118972528', '84179396', '90988586', '30458491']);
-      const filtered = rows.filter(r2 => !r2.owner_id || DS_FORM_OWNERS.has(String(r2.owner_id)));
-      const hiddenCount = rows.length - filtered.length;
+      const isCustomer = r2 => String(r2.lifecyclestage || '').toLowerCase() === 'customer';
+      const filtered = rows.filter(r2 =>
+        (!r2.owner_id || DS_FORM_OWNERS.has(String(r2.owner_id))) && !isCustomer(r2)
+      );
+      const hiddenCount = rows.filter(r2 => r2.owner_id && !DS_FORM_OWNERS.has(String(r2.owner_id))).length;
+      const hiddenCustomers = rows.filter(isCustomer).length;
 
       const missed = filtered.filter(r2 => !r2.contacted).length;
       const respTimes = filtered.filter(r2 => r2.days_to_contact != null).map(r2 => r2.days_to_contact).sort((a, b) => a - b);
@@ -761,7 +768,7 @@ export default async function handler(req, res) {
       res.setHeader('Cache-Control', 's-maxage=300, stale-while-revalidate=600');
       return res.status(200).json({
         days, total: filtered.length, not_contacted: missed, median_days_to_contact: medianResponse,
-        hidden_non_ds: hiddenCount,
+        hidden_non_ds: hiddenCount, hidden_customers: hiddenCustomers,
         rows: filtered, fetchedAt: new Date().toISOString()
       });
     } catch (e) {
