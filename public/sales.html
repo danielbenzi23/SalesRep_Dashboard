@@ -1039,17 +1039,27 @@
             <div class="val" style="font-size:22px">${s.v}</div>
             <div style="font-size:11px;color:#888780;margin-top:2px">${pct(s.v)}% of created${i > 0 && steps[i-1].v > 0 ? ` · ${Math.round((s.v / steps[i-1].v) * 100)}% step` : ''}</div>
           </div>`).join('')}
-      </div>
+      </div>`;
+
+    const wt = d.window_totals;
+    const coverage = wt ? `
+        <div style="margin-top:8px;padding:8px 12px;background:#F7F6F3;border-radius:8px;font-size:11px;color:#5F5E5A">
+          <b style="font-weight:500">Attribution coverage (whole window, not just the rows below):</b>
+          ${wt.created} contacts created ·
+          <b style="font-weight:500">${wt.paid}</b> tagged Paid Search/Social by HubSpot ·
+          <b style="font-weight:500">${wt.with_utm_source}</b> carry utm_source ·
+          <b style="font-weight:500">${wt.with_utm_campaign}</b> carry utm_campaign.
+          ${wt.paid > 0 && wt.with_utm_campaign < wt.paid
+            ? `<div style="margin-top:4px;color:#633806">⚠ Paid traffic is landing, but ${wt.paid - wt.with_utm_campaign} of ${wt.paid} paid contacts have no utm_campaign — so "which campaign" can't be attributed, only "paid search".</div>`
+            : ''}
+        </div>` : '';
+      document.getElementById('lj-funnel').innerHTML += `
       <div style="font-size:11px;color:#888780;margin-top:8px">
         ${d.filter === 'webinar'
           ? `${d.total} webinar leads (all time, by conversion event)`
-          : `${d.total} leads created in the last ${d.days} days${d.truncated ? ' (capped at 500 — narrow the range for full coverage)' : ''}`}
+          : `Showing the ${d.total} most recent${d.truncated ? ` of ${wt ? wt.created : 'all'} created` : ''} · funnel counts refer to these rows`}
         ${d.median_days_to_contact != null ? ` · median ${d.median_days_to_contact}d to first contact` : ''}
-        ${d.utm_tagged != null ? ` · ${d.utm_tagged} with UTM tags` : ''}
-      </div>
-      ${d.utm_tagged === 0 ? `<div style="margin-top:8px;padding:8px 12px;background:#FAEEDA;border-radius:8px;font-size:11px;color:#633806">
-        ⚠ No UTM parameters on any of these contacts — campaign attribution will stay empty until the tracking gap is fixed.
-      </div>` : ''}`;
+      </div>${coverage}`;
 
     const srcRows = (d.by_source || []).slice(0, 10);
     document.getElementById('lj-sources').innerHTML = srcRows.length ? `<table>
