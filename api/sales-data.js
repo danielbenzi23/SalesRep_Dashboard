@@ -11,6 +11,17 @@ import {
 
 const DS_PIPELINE = '23928898';
 
+// The DS sales team, and only them. Everything owned by Partner Success
+// (Chris Hart, Sharon Peacock, Beto, Woody, David Cook) is excluded from the
+// Forms and Lead-journey views — those are demand-gen views, and PS-owned
+// contacts are existing customers, not new leads.
+// Jay · Michael · Charles · Drew
+const DS_SALES_OWNERS = new Set(['118972528', '84179396', '90988586', '30458491']);
+
+// Unassigned contacts stay visible: a brand-new form fill has no owner yet,
+// and hiding it would hide exactly the leads that need routing.
+const isDsSalesOwned = ownerId => !ownerId || DS_SALES_OWNERS.has(String(ownerId));
+
 const STAGE_PROBABILITY = {
   '56188255': 0.05, '56188256': 0.25, '56188257': 0.50,
   '1301242997': 0.20, '85090957': 0.90, '56188260': 1.00, '70398793': 0.01, '56188261': 0.00
@@ -529,6 +540,11 @@ export default async function handler(req, res) {
       // Existing customers are not leads — drop them from the journey
       const customersDropped = base.filter(x => String(x.p.lifecyclestage || '').toLowerCase() === 'customer').length;
       base = base.filter(x => String(x.p.lifecyclestage || '').toLowerCase() !== 'customer');
+      // Same scope rule as the Forms tab: DS sales team + unassigned only.
+      // Partner Success owners (Chris, Sharon, Beto, Woody, David Cook) manage
+      // existing accounts, so their contacts are noise in a demand-gen view.
+      const nonDsDropped = base.filter(x => !isDsSalesOwned(x.p.hubspot_owner_id)).length;
+      base = base.filter(x => isDsSalesOwned(x.p.hubspot_owner_id));
       const truncated = !onlyWebinar && contacts.length >= 500;
 
       // Deals for the contacts that have any (association + batch read)
@@ -642,6 +658,7 @@ export default async function handler(req, res) {
       return res.status(200).json({
         days, filter: onlyWebinar ? 'webinar' : 'all',
         total: n, truncated, customers_excluded: customersDropped,
+        hidden_non_ds: nonDsDropped,
         // Window-wide truths (independent of the row cap above)
         window_totals: onlyWebinar ? null : {
           created: totalCreated,
@@ -753,7 +770,7 @@ export default async function handler(req, res) {
       // picked those up yet, which is the whole point of this tab).
       // Everything owned by Partner Success / CS (Chris Hart, Sharon Peacock,
       // Woody Robertson, David Cook, Beto Cervantes, Cody) is filtered out.
-      const DS_FORM_OWNERS = new Set(['118972528', '84179396', '90988586', '30458491']);
+      const DS_FORM_OWNERS = DS_SALES_OWNERS;
       const isCustomer = r2 => String(r2.lifecyclestage || '').toLowerCase() === 'customer';
       const filtered = rows.filter(r2 =>
         (!r2.owner_id || DS_FORM_OWNERS.has(String(r2.owner_id))) && !isCustomer(r2)
