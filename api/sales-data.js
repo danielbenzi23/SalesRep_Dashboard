@@ -76,6 +76,19 @@ const webinarReasonOf = p =>
   : offlineWebinar(p) ? 'offline keyword'
   : 'conversion/utm keyword';
 
+// WHICH value made this a webinar. 80 contacts carry BOTH source_event and
+// source_name — e.g. met at NACAC, later attended a webinar — so grouping the
+// webinar view by source_event would label a real webinar lead "NACAC
+// Conference 2024". Always report the field that actually matched.
+const webinarSourceOf = p => {
+  const cands = [p.source_event, p.source_name].filter(Boolean);
+  return cands.find(v => WEBINAR_SOURCES.has(v))
+      || cands.find(v => WEBINAR_RE.test(v))
+      || [p.first_conversion_event_name, p.recent_conversion_event_name, p.utm_campaign, p.utm_content]
+           .filter(Boolean).find(v => WEBINAR_RE.test(v))
+      || null;
+};
+
 const STAGE_PROBABILITY = {
   '56188255': 0.05, '56188256': 0.25, '56188257': 0.50,
   '1301242997': 0.20, '85090957': 0.90, '56188260': 1.00, '70398793': 0.01, '56188261': 0.00
@@ -682,6 +695,7 @@ export default async function handler(req, res) {
           origin: originOf(p),
           is_webinar: isWebinar(p),
           webinar_reason: webinarReasonOf(p),
+          webinar_source: webinarSourceOf(p),
           first_contact_at: lastTouch,
           days_to_first_contact: dayDiff(created, lastTouch),
           times_contacted: parseInt(p.num_contacted_notes || 0, 10) || 0,
@@ -717,9 +731,13 @@ export default async function handler(req, res) {
       };
       const bySource = {};
       for (const r2 of rows) {
-        // An explicit offline tag wins over the generic "Offline Sources"
-        // label HubSpot assigns — "Webinar Q3" is an answer, "Offline" is not.
-        const key = r2.source_event || r2.source_name || r2.utm_source || r2.source || 'Unknown';
+        // In the webinar view, group by the value that made it a webinar —
+        // otherwise a dual-tagged lead lands under the conference or the tool
+        // that also touched it, and the table reads as if Apollo ran a webinar.
+        // Elsewhere: an explicit offline tag beats HubSpot's generic "Offline
+        // Sources" label — "Webinar Simulive" is an answer, "Offline" is not.
+        const key = (onlyWebinar && r2.webinar_source)
+          || r2.source_event || r2.source_name || r2.utm_source || r2.source || 'Unknown';
         if (!bySource[key]) bySource[key] = { source: key, leads: 0, contacted: 0, deals: 0, won: 0, value: 0 };
         bySource[key].leads++;
         if (r2.first_contact_at) bySource[key].contacted++;
