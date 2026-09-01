@@ -488,7 +488,11 @@ export default async function handler(req, res) {
         'recent_conversion_event_name', 'recent_conversion_date', 'num_conversion_events',
         'notes_last_contacted', 'num_contacted_notes', 'hs_sales_email_last_replied',
         'lifecyclestage', 'hs_lead_status', 'hubspot_owner_id',
-        'num_associated_deals', 'hs_latest_meeting_activity'
+        'num_associated_deals', 'hs_latest_meeting_activity',
+        // Custom offline-source properties. Webinars and events are tagged
+        // here rather than through a web conversion, so without these two a
+        // webinar lead that never filled a form looks like it came from nowhere.
+        'source_event', 'source_name'
       ];
 
       // True totals for the window (cheap: limit 1, we only read `total`).
@@ -512,16 +516,22 @@ export default async function handler(req, res) {
       // HubSpot ANDs filters inside one group.
       let contacts;
       if (onlyWebinar) {
-        const [byFirst, byRecent] = await Promise.all([
-          fetchAll(hsToken, 'contacts', [
-            { propertyName: 'first_conversion_event_name', operator: 'CONTAINS_TOKEN', value: 'webinar' }
-          ], props, [{ propertyName: 'createdate', direction: 'DESCENDING' }], 3),
-          fetchAll(hsToken, 'contacts', [
-            { propertyName: 'recent_conversion_event_name', operator: 'CONTAINS_TOKEN', value: 'webinar' }
-          ], props, [{ propertyName: 'createdate', direction: 'DESCENDING' }], 3)
+        // Four searches, not two: a lead that came from a webinar we ran
+        // offline has no web conversion at all — it is tagged only on
+        // source_event / source_name. Searching conversions alone missed them.
+        const webinarSearch = prop => fetchAll(
+          hsToken, 'contacts',
+          [{ propertyName: prop, operator: 'CONTAINS_TOKEN', value: 'webinar' }],
+          props, [{ propertyName: 'createdate', direction: 'DESCENDING' }], 3
+        ).catch(() => []); // a portal without the custom prop must not 400 the tab
+        const found = await Promise.all([
+          webinarSearch('first_conversion_event_name'),
+          webinarSearch('recent_conversion_event_name'),
+          webinarSearch('source_event'),
+          webinarSearch('source_name')
         ]);
         const seen = new Set();
-        contacts = [...byFirst, ...byRecent].filter(c => !seen.has(c.id) && seen.add(c.id));
+        contacts = found.flat().filter(c => !seen.has(c.id) && seen.add(c.id));
       } else {
         contacts = await fetchAll(hsToken, 'contacts', [
           { propertyName: 'createdate', operator: 'GTE', value: since }
@@ -533,7 +543,16 @@ export default async function handler(req, res) {
         WEBINAR_RE.test(p.first_conversion_event_name || '') ||
         WEBINAR_RE.test(p.recent_conversion_event_name || '') ||
         WEBINAR_RE.test(p.utm_campaign || '') ||
-        WEBINAR_RE.test(p.utm_content || '');
+        WEBINAR_RE.test(p.utm_content || '') ||
+        WEBINAR_RE.test(p.source_event || '') ||
+        WEBINAR_RE.test(p.source_name || '');
+
+      // Where the lead actually came from, in priority order: an explicitly
+      // tagged offline event beats an inferred web source, because someone
+      // typed it in on purpose.
+      const originOf = p =>
+        p.source_event || p.source_name ||
+        p.first_conversion_event_name || p.recent_conversion_event_name || null;
 
       let base = contacts.map(c => ({ id: c.id, p: c.properties }));
       if (onlyWebinar) base = base.filter(x => isWebinar(x.p));
@@ -601,6 +620,9 @@ export default async function handler(req, res) {
           last_conversion: p.recent_conversion_event_name || null,
           last_conversion_date: p.recent_conversion_date || null,
           conversions: parseInt(p.num_conversion_events || 0, 10) || 0,
+          source_event: p.source_event || null,
+          source_name: p.source_name || null,
+          origin: originOf(p),
           is_webinar: isWebinar(p),
           first_contact_at: lastTouch,
           days_to_first_contact: dayDiff(created, lastTouch),
@@ -637,7 +659,9 @@ export default async function handler(req, res) {
       };
       const bySource = {};
       for (const r2 of rows) {
-        const key = r2.utm_source || r2.source || 'Unknown';
+        // An explicit offline tag wins over the generic "Offline Sources"
+        // label HubSpot assigns — "Webinar Q3" is an answer, "Offline" is not.
+        const key = r2.source_event || r2.source_name || r2.utm_source || r2.source || 'Unknown';
         if (!bySource[key]) bySource[key] = { source: key, leads: 0, contacted: 0, deals: 0, won: 0, value: 0 };
         bySource[key].leads++;
         if (r2.first_contact_at) bySource[key].contacted++;
