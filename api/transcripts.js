@@ -233,14 +233,23 @@ async function runHandler(req, res) {
       });
     }
 
-    // ===== LIST transcripts (with pagination) =====
-    const limit = Math.min(parseInt(url.searchParams.get('limit') || '50', 10), 100);
+    // ===== LIST transcripts =====
+    // ?all=1 returns every meeting under the parent page, not just the first
+    // 100. listChildPages already walks Confluence's pagination, so this cap
+    // was the only thing truncating the list. 2000 is a runaway guard (~20
+    // sequential Confluence calls, well inside the 60s budget), not a page size.
+    const wantAll = url.searchParams.get('all') === '1';
+    const limit = wantAll
+      ? 2000
+      : Math.min(parseInt(url.searchParams.get('limit') || '50', 10), 100);
     let pages;
     try { pages = await listChildPages(transcriptsParentId(), { limit }); }
     catch (e) { return res.status(502).json({ error: 'confluence_failed', detail: e.message }); }
 
     return res.status(200).json({
       count: pages.length,
+      // Tells the UI whether it is looking at everything or a truncated view.
+      complete: wantAll ? pages.length < limit : pages.length < limit,
       results: pages.map(p => {
         const labels = p.labels || [];
         const has_insight = labels.includes('claude-analyzed');
