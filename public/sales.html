@@ -2528,15 +2528,24 @@
 
   // -------- CONVERSATIONS PAGINATION + FILTERS --------
   let trAllCache = null;
+  let trCacheAt = 0;
   let trPage = 0;
+  // Meetings land in Confluence continuously via n8n. Holding the list for the
+  // whole browser session meant a call that finished five minutes ago never
+  // showed up until a hard reload — so the cache expires and re-pulls.
+  const TR_CACHE_TTL_MS = 2 * 60 * 1000;
 
   async function renderTranscripts(targetId, limit) {
     // For the "recent-meetings" panel we still just show top N
     const target = document.getElementById(targetId);
     target.innerHTML = '<div class="loading">Loading…</div>';
+    if (trAllCache && Date.now() - trCacheAt > TR_CACHE_TTL_MS) trAllCache = null;
     if (!trAllCache) {
       try {
-        const r = await fetch(`/api/transcripts?limit=100`);
+        // all=1 — pull every meeting, not the first 100. The pagination below
+        // is client-side over this array, so a capped fetch meant later pages
+        // were silently empty and "Analyze all pending" only ever saw page 1.
+        const r = await fetch(`/api/transcripts?all=1`);
         const j = await r.json().catch(() => ({}));
         if (!r.ok) {
           const msg = j.error || `HTTP ${r.status}`;
@@ -2544,6 +2553,7 @@
           throw new Error(msg + detail);
         }
         trAllCache = j;
+        trCacheAt = Date.now();
       } catch (e) {
         target.innerHTML = `<div style="color:#791F1F;font-size:12.5px;white-space:pre-wrap;">Error: ${e.message}</div>`;
         return;
