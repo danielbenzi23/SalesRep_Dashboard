@@ -22,6 +22,60 @@ const DS_SALES_OWNERS = new Set(['118972528', '84179396', '90988586', '30458491'
 // and hiding it would hide exactly the leads that need routing.
 const isDsSalesOwned = ownerId => !ownerId || DS_SALES_OWNERS.has(String(ownerId));
 
+// ===== WEBINAR CLASSIFICATION =====
+// Offline sources are free text in HubSpot (source_event / source_name), so a
+// keyword match cannot decide this on its own: "McAllister & Quinn" is a
+// co-hosted webinar and contains no clue that says so, while "NACAC Conference
+// 2024" and "AACRAO Booth Visit" are conferences that a loose rule would happily
+// swallow. So the offline side is an EXPLICIT allowlist, verified against the
+// full value vocabulary in the portal (3,602 tagged contacts).
+//
+// TO ADD A NEW WEBINAR: paste the exact source_event / source_name string here.
+// Match is exact and case-sensitive — HubSpot stores these verbatim.
+const WEBINAR_SOURCES = new Set([
+  'Webinar Simulive',
+  'McAllister & Quinn',                 // partner co-hosted — no keyword in the name
+  'Dr Grawe Session 1 Webinar Q3 2025',
+  'Webinar Dr Grawe 2',
+  'David Hatami Webinar AI Ep1',
+  'NACCAP Webinar Sep 2025'
+]);
+
+// Deliberately NOT webinars, kept here so nobody re-adds them by accident:
+// NACAC Conference 2024 · NACCAP Q2 2025 · NACCAP · AICCU Annual Meeting 2025
+// AACRAO TT Q3 2025 · AACRAO Booth Visit · AACRAO Promotion Offer (events/booths)
+// Apollo · Salesforge · Hubspot · DegreeSight (tools and internal)
+// Organic Social · Social Media · SocialMedia · LinkedIn (channels)
+// TFA FORM · CONSULTATION REQUEST (inbound forms)
+// 'LinkedIn Event' is genuinely ambiguous — left out until confirmed.
+
+const WEBINAR_RE = /webinar/i;
+
+// Offline fields use the exact allowlist, plus a keyword fallback so a NEW
+// webinar named "…Webinar…" is caught before anyone edits the list.
+const offlineWebinar = p =>
+  WEBINAR_SOURCES.has(p.source_event || '') ||
+  WEBINAR_SOURCES.has(p.source_name || '') ||
+  WEBINAR_RE.test(p.source_event || '') ||
+  WEBINAR_RE.test(p.source_name || '');
+
+// Conversion and UTM fields keep the keyword rule — web registrations are
+// named descriptively, so a keyword is safe there.
+const isWebinarProps = p =>
+  offlineWebinar(p) ||
+  WEBINAR_RE.test(p.first_conversion_event_name || '') ||
+  WEBINAR_RE.test(p.recent_conversion_event_name || '') ||
+  WEBINAR_RE.test(p.utm_campaign || '') ||
+  WEBINAR_RE.test(p.utm_content || '');
+
+// Why a row was classified as a webinar — lets you audit the tab instead of
+// trusting it.
+const webinarReasonOf = p =>
+  !isWebinarProps(p) ? null
+  : (WEBINAR_SOURCES.has(p.source_event || '') || WEBINAR_SOURCES.has(p.source_name || '')) ? 'allowlist'
+  : offlineWebinar(p) ? 'offline keyword'
+  : 'conversion/utm keyword';
+
 const STAGE_PROBABILITY = {
   '56188255': 0.05, '56188256': 0.25, '56188257': 0.50,
   '1301242997': 0.20, '85090957': 0.90, '56188260': 1.00, '70398793': 0.01, '56188261': 0.00
@@ -519,33 +573,36 @@ export default async function handler(req, res) {
         // Four searches, not two: a lead that came from a webinar we ran
         // offline has no web conversion at all — it is tagged only on
         // source_event / source_name. Searching conversions alone missed them.
-        const webinarSearch = prop => fetchAll(
+        const search = (prop, op, value) => fetchAll(
           hsToken, 'contacts',
-          [{ propertyName: prop, operator: 'CONTAINS_TOKEN', value: 'webinar' }],
+          [{ propertyName: prop, operator: op, value }],
           props, [{ propertyName: 'createdate', direction: 'DESCENDING' }], 3
         ).catch(() => []); // a portal without the custom prop must not 400 the tab
+        const byKeyword = p => search(p, 'CONTAINS_TOKEN', 'webinar');
+
+        // Keyword searches find webinars that say so. The allowlist searches
+        // find the ones that don't — without these, a partner-named webinar is
+        // never even fetched, so no amount of client-side filtering can save it.
+        const named = [...WEBINAR_SOURCES].filter(v => !WEBINAR_RE.test(v));
         const found = await Promise.all([
-          webinarSearch('first_conversion_event_name'),
-          webinarSearch('recent_conversion_event_name'),
-          webinarSearch('source_event'),
-          webinarSearch('source_name')
+          byKeyword('first_conversion_event_name'),
+          byKeyword('recent_conversion_event_name'),
+          byKeyword('source_event'),
+          byKeyword('source_name'),
+          ...named.flatMap(v => [search('source_event', 'EQ', v), search('source_name', 'EQ', v)])
         ]);
         const seen = new Set();
         contacts = found.flat().filter(c => !seen.has(c.id) && seen.add(c.id));
+        // HubSpot's EQ on these string props is token/prefix-based, not exact,
+        // so it over-fetches. isWebinar below is the real gate.
+        contacts = contacts.filter(c => isWebinarProps(c.properties));
       } else {
         contacts = await fetchAll(hsToken, 'contacts', [
           { propertyName: 'createdate', operator: 'GTE', value: since }
         ], props, [{ propertyName: 'createdate', direction: 'DESCENDING' }], 5);
       }
 
-      const WEBINAR_RE = /webinar/i;
-      const isWebinar = p =>
-        WEBINAR_RE.test(p.first_conversion_event_name || '') ||
-        WEBINAR_RE.test(p.recent_conversion_event_name || '') ||
-        WEBINAR_RE.test(p.utm_campaign || '') ||
-        WEBINAR_RE.test(p.utm_content || '') ||
-        WEBINAR_RE.test(p.source_event || '') ||
-        WEBINAR_RE.test(p.source_name || '');
+      const isWebinar = isWebinarProps;
 
       // Where the lead actually came from, in priority order: an explicitly
       // tagged offline event beats an inferred web source, because someone
@@ -624,6 +681,7 @@ export default async function handler(req, res) {
           source_name: p.source_name || null,
           origin: originOf(p),
           is_webinar: isWebinar(p),
+          webinar_reason: webinarReasonOf(p),
           first_contact_at: lastTouch,
           days_to_first_contact: dayDiff(created, lastTouch),
           times_contacted: parseInt(p.num_contacted_notes || 0, 10) || 0,
