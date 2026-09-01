@@ -1121,6 +1121,14 @@
           utmTag('campaign', r.utm_campaign), utmTag('content', r.utm_content),
           utmTag('term', r.utm_term)
         ].filter(Boolean).join('');
+        // Offline events are tagged by hand in HubSpot and carry no UTMs, so
+        // they get their own amber chips — otherwise these leads read as
+        // "no UTM tags" when in fact we know exactly where they came from.
+        const offTag = (k, v) => v
+          ? `<span style="display:inline-block;background:#FDF3E3;color:#8A5A18;border-radius:4px;padding:1px 5px;font-size:10px;margin:1px 3px 1px 0"><b style="font-weight:500">${k}</b>=${escapeHtml(String(v).slice(0, 28))}</span>`
+          : '';
+        const offlineChips = [offTag('event', r.source_event), offTag('name', r.source_name)].filter(Boolean).join('');
+        const offlineTag = offlineChips ? `<div style="margin-top:3px">${offlineChips}</div>` : '';
         return `<tr${!r.first_contact_at ? ' style="background:#FCF3F3"' : ''}>
           <td>
             <a href="${r.hubspot_url}" target="_blank" style="color:#0C447C;text-decoration:none;font-weight:500">${escapeHtml(r.name)}</a>
@@ -1131,9 +1139,10 @@
           <td>
             ${escapeHtml(r.source || '—')}
             ${r.source_detail ? `<div class="meta">${escapeHtml(String(r.source_detail).slice(0, 38))}</div>` : ''}
-            ${utmTags ? `<div style="margin-top:3px">${utmTags}</div>` : '<div class="meta" style="color:#B8B6AE">no UTM tags</div>'}
+            ${offlineTag}
+            ${utmTags ? `<div style="margin-top:3px">${utmTags}</div>` : (offlineTag ? '' : '<div class="meta" style="color:#B8B6AE">no UTM tags</div>')}
           </td>
-          <td><span class="meta">${escapeHtml((r.first_conversion || '—').slice(0, 46))}</span></td>
+          <td><span class="meta">${escapeHtml((r.origin || r.first_conversion || '—').slice(0, 46))}</span></td>
           <td style="white-space:nowrap">
             ${chip('Created', true)}${chip('Conv', has('Converted'))}${chip('Contact', has('Contacted'))}${chip('Meet', has('Meeting'))}${chip('Deal', has('Deal'))}${chip('Won', has('Won'))}
           </td>
