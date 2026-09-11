@@ -38,7 +38,8 @@ const WEBINAR_SOURCES = new Set([
   'Dr Grawe Session 1 Webinar Q3 2025',
   'Webinar Dr Grawe 2',
   'David Hatami Webinar AI Ep1',
-  'NACCAP Webinar Sep 2025'
+  'NACCAP Webinar Sep 2025',
+  'LinkedIn Event'                      // confirmed by Daniel — LinkedIn Live counts
 ]);
 
 // Deliberately NOT webinars, kept here so nobody re-adds them by accident:
@@ -47,7 +48,6 @@ const WEBINAR_SOURCES = new Set([
 // Apollo · Salesforge · Hubspot · DegreeSight (tools and internal)
 // Organic Social · Social Media · SocialMedia · LinkedIn (channels)
 // TFA FORM · CONSULTATION REQUEST (inbound forms)
-// 'LinkedIn Event' is genuinely ambiguous — left out until confirmed.
 
 const WEBINAR_RE = /webinar/i;
 
@@ -169,6 +169,14 @@ function quarterRange(d = new Date()) {
   const qName = `Q${Math.floor(m / 3) + 1} ${y}`;
   return { start, end, name: qName };
 }
+// Quarter N steps away from the one containing `d`. offset -1 = last quarter,
+// +1 = next. Month arithmetic with UTC handles the year rollover on its own.
+function quarterRangeOffset(offset = 0, d = new Date()) {
+  const qStartMonth = Math.floor(d.getUTCMonth() / 3) * 3 + offset * 3;
+  const anchor = new Date(Date.UTC(d.getUTCFullYear(), qStartMonth, 1));
+  return quarterRange(anchor);
+}
+
 function yearStart(d = new Date()) {
   return new Date(Date.UTC(d.getUTCFullYear(), 0, 1));
 }
@@ -444,16 +452,20 @@ export default async function handler(req, res) {
   //         pipeline=ds|all · owner=me|all
   if (urlObj.searchParams.get('action') === 'pipeline_view') {
     try {
-      const scope = urlObj.searchParams.get('scope') === 'quarter' ? 'quarter' : 'open';
+      const rawScope = urlObj.searchParams.get('scope');
+      const scope = ['quarter', 'next_quarter'].includes(rawScope) ? rawScope : 'open';
       const pipelineSel = urlObj.searchParams.get('pipeline') === 'all' ? 'all' : 'ds';
       const ownerScope = urlObj.searchParams.get('owner') === 'all' ? 'all' : 'me';
       const nowPv = new Date();
-      const { start: qS, end: qE, name: qNm } = quarterRange(nowPv);
+      // The window this view is about: current quarter, the next one, or (for
+      // "open") the current one, which the header still labels.
+      const offset = scope === 'next_quarter' ? 1 : 0;
+      const { start: qS, end: qE, name: qNm } = quarterRangeOffset(offset, nowPv);
 
       const filters = [];
       if (pipelineSel === 'ds') filters.push({ propertyName: 'pipeline', operator: 'EQ', value: DS_PIPELINE });
       if (ownerScope === 'me') filters.push({ propertyName: 'hubspot_owner_id', operator: 'EQ', value: ownerId });
-      if (scope === 'quarter') {
+      if (scope === 'quarter' || scope === 'next_quarter') {
         filters.push({ propertyName: 'closedate', operator: 'BETWEEN', value: qS.toISOString(), highValue: qE.toISOString() });
       } else {
         filters.push({ propertyName: 'hs_is_closed', operator: 'NEQ', value: 'true' });
@@ -527,10 +539,62 @@ export default async function handler(req, res) {
         status: isWon(d) ? 'won' : (isClosed(d) ? 'lost' : 'open')
       }));
 
+      // ===== Previous quarters =====
+      // Four closed quarters, each a small search returning only what the
+      // summary needs. Won rate here is by COUNT of decided deals (won + lost),
+      // so open deals still sitting in an old quarter cannot flatter it.
+      const HISTORY_QUARTERS = 4;
+      const history = await Promise.all(
+        Array.from({ length: HISTORY_QUARTERS }, (_, i) => i + 1).map(async back => {
+          const { start, end, name } = quarterRangeOffset(-back, nowPv);
+          const hFilters = [
+            { propertyName: 'closedate', operator: 'BETWEEN', value: start.toISOString(), highValue: end.toISOString() }
+          ];
+          if (pipelineSel === 'ds') hFilters.push({ propertyName: 'pipeline', operator: 'EQ', value: DS_PIPELINE });
+          if (ownerScope === 'me') hFilters.push({ propertyName: 'hubspot_owner_id', operator: 'EQ', value: ownerId });
+          try {
+            const raw = await fetchAll(hsToken, 'deals', hFilters,
+              ['amount', 'dealstage', 'closedate', 'hs_is_closed', 'hs_is_closed_won'],
+              [{ propertyName: 'amount', direction: 'DESCENDING' }], 3);
+            const rows = raw.map(d => d.properties);
+            const won = rows.filter(isWon);
+            const lost = rows.filter(d => isClosed(d) && !isWon(d));
+            const wonAmt = won.reduce((s, d) => s + num(d.amount), 0);
+            const decided = won.length + lost.length;
+            return {
+              quarter: name,
+              start: start.toISOString().slice(0, 10),
+              deals: rows.length,
+              won_count: won.length,
+              lost_count: lost.length,
+              won_amount: Math.round(wonAmt),
+              avg_won: won.length ? Math.round(wonAmt / won.length) : 0,
+              win_rate: decided ? Math.round((won.length / decided) * 100) : null
+            };
+          } catch {
+            return { quarter: name, start: start.toISOString().slice(0, 10), error: true };
+          }
+        })
+      );
+      history.sort((a, b) => a.start.localeCompare(b.start)); // oldest → newest
+
+      const okHist = history.filter(h => !h.error);
+      const histTotals = {
+        won_amount: okHist.reduce((s, h) => s + (h.won_amount || 0), 0),
+        won_count: okHist.reduce((s, h) => s + (h.won_count || 0), 0),
+        quarters: okHist.length
+      };
+      histTotals.avg_per_quarter = histTotals.quarters
+        ? Math.round(histTotals.won_amount / histTotals.quarters) : 0;
+
       res.setHeader('Cache-Control', 's-maxage=300, stale-while-revalidate=600');
       return res.status(200).json({
         params: { scope, pipeline: pipelineSel, owner: ownerScope, ownerId },
-        quarter: qNm, metrics, deals, total_count: list.length
+        quarter: qNm,
+        quarter_start: qS.toISOString().slice(0, 10),
+        quarter_end: qE.toISOString().slice(0, 10),
+        metrics, deals, total_count: list.length,
+        history, history_totals: histTotals
       });
     } catch (e) {
       return res.status(502).json({ error: 'pipeline_view failed', detail: e.message });
