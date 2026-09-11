@@ -1494,7 +1494,7 @@
               ${d.quarter} ${deltaPct >= 0 ? '+' : ''}${deltaPct}% vs avg
             </span>` : ''}
         </div>
-        <div style="display:grid;grid-template-columns:repeat(${hist.length},1fr);gap:10px">
+        <div style="display:grid;grid-template-columns:repeat(${hist.length},1fr);gap:10px;margin-bottom:12px">
           ${hist.map(h => `
             <div class="stat" style="padding:11px">
               <div class="lbl">${escapeHtml(h.quarter)}</div>
@@ -1503,11 +1503,73 @@
                 <div style="height:100%;width:${Math.round(((h.won_amount || 0) / max) * 100)}%;background:#0F6E56;border-radius:2px"></div>
               </div>
               <div style="font-size:11px;color:#888780">
-                ${h.won_count} won${h.lost_count ? ` · ${h.lost_count} lost` : ''}${h.win_rate != null ? ` · ${h.win_rate}%` : ''}
+                ${h.won_count} won${h.lost_count ? ` · ${h.lost_count} lost` : ''}${winRateText(h)}
               </div>
               ${h.avg_won ? `<div style="font-size:10.5px;color:#A8A69E;margin-top:1px">avg ${fmtMoneyK(h.avg_won)}</div>` : ''}
             </div>`).join('')}
         </div>
+        ${renderPvHistoryTable(hist)}
+        ${t.no_losses_recorded ? `
+          <div style="font-size:11px;color:#8A6D1F;background:#FDF6E3;border:0.5px solid #EADFC0;border-radius:6px;padding:7px 10px;margin-top:10px">
+            No deal was marked <strong>Closed Lost</strong> in any of these quarters, so win rate reads 100%
+            — that reflects how deals are recorded in HubSpot, not the real close rate.
+          </div>` : ''}
+      </div>`;
+  }
+
+  /* 100% is what you get when nobody ever marks a deal lost. Say that, rather
+     than presenting an artifact of data entry as a result. */
+  function winRateText(h) {
+    if (h.win_rate == null) return '';
+    if (h.no_losses_recorded) return ' · no losses recorded';
+    return ` · ${h.win_rate}%`;
+  }
+
+  /* The same six measures as the header cards, per closed quarter. Quarters run
+     across as columns so you read each metric along a single line — that is the
+     comparison you actually want, not four isolated cards. */
+  function renderPvHistoryTable(hist) {
+    const ROWS = [
+      { lbl: 'Total deal amount', get: h => h.metrics?.total,    note: 'all deals closing in the quarter' },
+      { lbl: 'Weighted amount',   get: h => h.metrics?.weighted, note: 'amount × stage probability' },
+      { lbl: 'Open deal amount',  get: h => h.metrics?.open,     note: 'still open past the quarter — slipped' },
+      { lbl: 'Closed won amount', get: h => h.metrics?.closed,   note: 'the quarter’s result' },
+      { lbl: 'New this quarter',  get: h => h.metrics?.new,      note: 'created inside the quarter' }
+    ];
+    const cell = m => m
+      ? `<div style="font-weight:600">${fmtMoneyK(m.amount)}</div>
+         <div style="font-size:10.5px;color:#A8A69E">${m.count} · avg ${fmtMoneyK(m.avg)}</div>`
+      : '<span style="color:#C4C2BA">—</span>';
+
+    return `
+      <div style="overflow-x:auto">
+        <table style="width:100%;border-collapse:collapse;font-size:12px">
+          <thead>
+            <tr>
+              <th style="text-align:left;padding:6px 8px;color:#888780;font-weight:500;font-size:11px">Metric</th>
+              ${hist.map(h => `<th style="text-align:right;padding:6px 8px;font-size:11px;font-weight:600">${escapeHtml(h.quarter)}</th>`).join('')}
+            </tr>
+          </thead>
+          <tbody>
+            ${ROWS.map(r => `
+              <tr style="border-top:0.5px solid rgba(0,0,0,0.06)">
+                <td style="padding:7px 8px;white-space:nowrap">
+                  ${r.lbl}
+                  <div style="font-size:10.5px;color:#A8A69E">${r.note}</div>
+                </td>
+                ${hist.map(h => `<td style="padding:7px 8px;text-align:right">${cell(r.get(h))}</td>`).join('')}
+              </tr>`).join('')}
+            <tr style="border-top:0.5px solid rgba(0,0,0,0.06)">
+              <td style="padding:7px 8px;white-space:nowrap">
+                Avg sales cycle
+                <div style="font-size:10.5px;color:#A8A69E">create → close, won deals</div>
+              </td>
+              ${hist.map(h => `<td style="padding:7px 8px;text-align:right;font-weight:600">${
+                h.metrics?.avg_cycle_months ? h.metrics.avg_cycle_months + ' mo' : '<span style="color:#C4C2BA">—</span>'
+              }</td>`).join('')}
+            </tr>
+          </tbody>
+        </table>
       </div>`;
   }
 
