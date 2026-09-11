@@ -342,6 +342,7 @@
             <div style="display:flex;background:#F1EFE8;border-radius:8px;padding:2px">
               <button id="pv-tab-open" class="pv-tab" onclick="setPvScope('open')" style="border:0;border-radius:6px;padding:5px 12px;font-size:12px;cursor:pointer;background:#fff;font-weight:500">Open pipeline</button>
               <button id="pv-tab-quarter" class="pv-tab" onclick="setPvScope('quarter')" style="border:0;border-radius:6px;padding:5px 12px;font-size:12px;cursor:pointer;background:transparent">Current quarter</button>
+              <button id="pv-tab-next_quarter" class="pv-tab" onclick="setPvScope('next_quarter')" style="border:0;border-radius:6px;padding:5px 12px;font-size:12px;cursor:pointer;background:transparent">Next quarter</button>
             </div>
             <select id="pv-pipeline" onchange="loadPipelineView()" style="font-size:12px;padding:5px 8px;border-radius:8px;border:0.5px solid rgba(0,0,0,0.15)">
               <option value="ds">DS Sales Team</option>
@@ -354,6 +355,7 @@
           </div>
         </div>
         <div id="pv-metrics" class="loading" style="margin-top:10px">Loading…</div>
+        <div id="pv-history"></div>
         <div id="pv-deals" style="margin-top:12px"></div>
       </div>
       <div class="panel" style="margin-bottom:14px">
@@ -443,6 +445,7 @@
               <option value="contacted">Contacted</option>
             </select>
             <input type="text" id="forms-search" placeholder="Search…" style="padding:6px 10px;border:0.5px solid rgba(0,0,0,0.15);border-radius:6px;font-size:12px;width:150px" />
+            <button onclick="exportForms()" title="Download exactly what is on screen, after filters and sorting" style="padding:6px 12px;border:0.5px solid rgba(0,0,0,0.15);border-radius:6px;background:#fff;cursor:pointer;font-size:12px">⬇ CSV</button>
             <select id="forms-page-size" style="padding:6px 10px;border:0.5px solid rgba(0,0,0,0.15);border-radius:6px;font-size:12px">
               <option value="25" selected>25 / page</option>
               <option value="50">50 / page</option>
@@ -489,7 +492,14 @@
               <option value="won">Won</option>
               <option value="nocontact">Never contacted</option>
             </select>
-            <input type="text" id="lj-search" oninput="renderJourneyRows()" placeholder="Search…" style="padding:6px 10px;border:0.5px solid rgba(0,0,0,0.15);border-radius:6px;font-size:12px;width:150px" />
+            <input type="text" id="lj-search" oninput="ljReset()" placeholder="Search name, company, source…" style="padding:6px 10px;border:0.5px solid rgba(0,0,0,0.15);border-radius:6px;font-size:12px;width:200px" />
+            <select id="lj-page-size" onchange="ljReset()" style="padding:6px 10px;border:0.5px solid rgba(0,0,0,0.15);border-radius:6px;font-size:12px">
+              <option value="25">25 / page</option>
+              <option value="50" selected>50 / page</option>
+              <option value="100">100 / page</option>
+              <option value="250">250 / page</option>
+            </select>
+            <button onclick="exportJourney()" title="Download exactly what is on screen, after filters and sorting" style="padding:6px 12px;border:0.5px solid rgba(0,0,0,0.15);border-radius:6px;background:#fff;cursor:pointer;font-size:12px">⬇ CSV</button>
           </div>
         </div>
         <div id="lj-funnel" class="loading" style="margin-top:12px">Loading…</div>
@@ -507,6 +517,13 @@
       <div class="panel">
         <div class="panel-title" id="lj-table-title" style="font-size:13px">Leads</div>
         <div id="lj-table" class="loading">Loading…</div>
+        <div id="lj-pager" style="display:none;justify-content:space-between;align-items:center;margin-top:12px;font-size:12px;color:#5F5E5A">
+          <span id="lj-pager-label"></span>
+          <div style="display:flex;gap:8px">
+            <button id="lj-prev" onclick="ljGo(-1)" style="padding:6px 14px;border:0.5px solid rgba(0,0,0,0.15);border-radius:8px;background:#fff;cursor:pointer;font-size:12px">← Prev</button>
+            <button id="lj-next" onclick="ljGo(1)" style="padding:6px 14px;border:0.5px solid rgba(0,0,0,0.15);border-radius:8px;background:#fff;cursor:pointer;font-size:12px">Next →</button>
+          </div>
+        </div>
       </div>
     </div>
 
@@ -1006,6 +1023,164 @@
   }
   window.setLjFilter = setLjFilter;
 
+  /* ===== Shared table sorting / export =====
+     One implementation for both Forms and Lead journey. Sorting a table by
+     clicking its header is the same problem twice, and two copies would drift
+     the moment either table gained a column. */
+
+  const tblSort = {
+    forms:   { key: 'submitted_at', dir: 'desc' },
+    journey: { key: 'created_at',   dir: 'desc' }
+  };
+
+  // How to read each sortable column. Text sorts case-insensitively; dates as
+  // epoch ms; missing values sink to the bottom regardless of direction, so a
+  // blank never outranks a real one.
+  const NUL = Symbol('empty');
+  const txt = v => (v == null || v === '') ? NUL : String(v).toLowerCase();
+  const dat = v => v ? Date.parse(v) : NUL;
+  const num = v => (v == null || v === '' || Number.isNaN(Number(v))) ? NUL : Number(v);
+
+  const SORT_ACCESSORS = {
+    forms: {
+      contacted:         r => r.contacted ? 1 : 0,
+      submitted_at:      r => dat(r.submitted_at),
+      name:              r => txt(r.name),
+      company:           r => txt(r.company),
+      submission_type:   r => txt(r.submission_type),
+      form_name:         r => txt(r.form_name),
+      owner:             r => txt(r.owner),
+      last_contacted:    r => dat(r.last_contacted),
+      days_to_contact:   r => num(r.days_to_contact),
+      times_contacted:   r => num(r.times_contacted),
+      total_submissions: r => num(r.total_submissions),
+      source:            r => txt(r.source)
+    },
+    journey: {
+      name:       r => txt(r.name),
+      created_at: r => dat(r.created_at),
+      source:     r => txt(r.webinar_source || r.source_event || r.source_name || r.utm_source || r.source),
+      origin:     r => txt(r.origin || r.first_conversion),
+      stages:     r => (r.stages || []).length,
+      to_contact: r => num(r.days_to_first_contact),
+      deal:       r => r.deal ? Number(r.deal.amount) || 0 : NUL
+    }
+  };
+
+  function sortRows(rows, table) {
+    const s = tblSort[table];
+    const get = SORT_ACCESSORS[table] && SORT_ACCESSORS[table][s.key];
+    if (!get) return rows;
+    const mul = s.dir === 'asc' ? 1 : -1;
+    // slice() so we never reorder the cache in place — the unsorted order is
+    // still the API's own ranking and other views rely on it.
+    return rows.slice().sort((a, b) => {
+      const va = get(a), vb = get(b);
+      if (va === NUL && vb === NUL) return 0;
+      if (va === NUL) return 1;          // empties last, both directions
+      if (vb === NUL) return -1;
+      if (va < vb) return -1 * mul;
+      if (va > vb) return 1 * mul;
+      return 0;
+    });
+  }
+
+  function sortTh(table, key, label, opts = {}) {
+    const s = tblSort[table];
+    const active = s.key === key;
+    const arrow = active ? (s.dir === 'asc' ? '▲' : '▼') : '<span style="opacity:.25">↕</span>';
+    const cls = opts.num ? ' class="num"' : '';
+    const title = opts.title ? ` title="${escapeHtml(opts.title)}"` : '';
+    return `<th${cls}${title} onclick="sortBy('${table}','${key}')" style="cursor:pointer;user-select:none;white-space:nowrap"
+      >${escapeHtml(label)} <span style="font-size:9px;color:${active ? '#2D58A8' : '#B8B6AE'}">${arrow}</span></th>`;
+  }
+
+  window.sortBy = function (table, key) {
+    const s = tblSort[table];
+    if (s.key === key) {
+      s.dir = s.dir === 'asc' ? 'desc' : 'asc';
+    } else {
+      s.key = key;
+      // Dates and numbers are most useful highest-first; text reads better A→Z.
+      const probe = SORT_ACCESSORS[table][key]({});
+      s.dir = (key.includes('_at') || key.includes('date') || typeof probe === 'number') ? 'desc' : 'asc';
+    }
+    if (table === 'forms') { formsPage = 0; renderForms(); }
+    else { ljPage = 0; renderJourneyRows(); }
+  };
+
+  // CSV of exactly what is on screen after filters and sorting — not the raw
+  // cache. If the table lies, the export lies the same way, which is the point.
+  function downloadCsv(filename, headers, rows) {
+    const cell = v => {
+      const s = v == null ? '' : String(v);
+      return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+    };
+    const csv = [headers.map(h => cell(h.label)).join(',')]
+      .concat(rows.map(r => headers.map(h => cell(h.get(r))).join(',')))
+      .join('\n');
+    const url = URL.createObjectURL(new Blob(['﻿' + csv], { type: 'text/csv;charset=utf-8;' }));
+    const a = document.createElement('a');
+    a.href = url; a.download = filename;
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  }
+
+  let ljPage = 0;
+  let ljFiltered = [];
+  let formsFiltered = [];
+
+  // Inline on* attributes execute in global scope, where a top-level `let` is
+  // not visible. Expose small functions instead of leaking the variable.
+  window.ljGo = function (delta) { ljPage += delta; renderJourneyRows(); };
+  window.ljReset = function () { ljPage = 0; renderJourneyRows(); };
+
+  window.exportForms = function () {
+    downloadCsv(`form-submissions-${new Date().toISOString().slice(0, 10)}.csv`, [
+      { label: 'Contacted',        get: r => r.contacted ? 'Yes' : 'No' },
+      { label: 'Submitted',        get: r => r.submitted_at },
+      { label: 'Name',             get: r => r.name },
+      { label: 'Email',            get: r => r.email },
+      { label: 'Company',          get: r => r.company },
+      { label: 'Job title',        get: r => r.jobtitle },
+      { label: 'Type',             get: r => r.submission_type },
+      { label: 'Form / meeting',   get: r => r.form_name },
+      { label: 'Owner',            get: r => r.owner },
+      { label: 'Last contacted',   get: r => r.last_contacted },
+      { label: 'Days to contact',  get: r => r.days_to_contact },
+      { label: 'Touches',          get: r => r.times_contacted },
+      { label: 'Submissions',      get: r => r.total_submissions },
+      { label: 'Source',           get: r => r.source },
+      { label: 'HubSpot',          get: r => r.hubspot_url }
+    ], formsFiltered);
+  };
+
+  window.exportJourney = function () {
+    downloadCsv(`lead-journey-${new Date().toISOString().slice(0, 10)}.csv`, [
+      { label: 'Name',            get: r => r.name },
+      { label: 'Email',           get: r => r.email },
+      { label: 'Company',         get: r => r.company },
+      { label: 'Created',         get: r => r.created_at },
+      { label: 'Source',          get: r => r.source },
+      { label: 'Source event',    get: r => r.source_event },
+      { label: 'Source name',     get: r => r.source_name },
+      { label: 'Origin',          get: r => r.origin },
+      { label: 'Webinar',         get: r => r.is_webinar ? 'Yes' : 'No' },
+      { label: 'Webinar source',  get: r => r.webinar_source },
+      { label: 'Why webinar',     get: r => r.webinar_reason },
+      { label: 'utm_source',      get: r => r.utm_source },
+      { label: 'utm_medium',      get: r => r.utm_medium },
+      { label: 'utm_campaign',    get: r => r.utm_campaign },
+      { label: 'Stages',          get: r => (r.stages || []).join(' > ') },
+      { label: 'Days to contact', get: r => r.days_to_first_contact },
+      { label: 'Owner',           get: r => r.owner },
+      { label: 'Deal',            get: r => r.deal ? r.deal.name : '' },
+      { label: 'Deal amount',     get: r => r.deal ? r.deal.amount : '' },
+      { label: 'Won',             get: r => r.deal && r.deal.won ? 'Yes' : '' },
+      { label: 'HubSpot',         get: r => r.hubspot_url }
+    ], ljFiltered);
+  };
+
   async function loadJourney(force) {
     const days = document.getElementById('lj-days').value;
     const key = `${ljFilter}|${days}`;
@@ -1097,20 +1272,58 @@
     if (stage === 'deal') rows = rows.filter(r => r.deal);
     else if (stage === 'won') rows = rows.filter(r => r.deal && r.deal.won);
     else if (stage === 'nocontact') rows = rows.filter(r => !r.first_contact_at);
-    if (q) rows = rows.filter(r => [r.name, r.email, r.company, r.utm_campaign, r.first_conversion].some(v => (v || '').toLowerCase().includes(q)));
+    // Search now also covers the offline source fields — searching "McAllister"
+    // or "NACAC" should find those leads, not come back empty.
+    if (q) rows = rows.filter(r => [
+      r.name, r.email, r.company, r.utm_campaign, r.utm_source, r.first_conversion,
+      r.source, r.source_event, r.source_name, r.origin, r.owner
+    ].some(v => (v || '').toLowerCase().includes(q)));
+
+    rows = sortRows(rows, 'journey');
+    ljFiltered = rows;
 
     document.getElementById('lj-table-title').textContent = `Leads (${rows.length})`;
     const el = document.getElementById('lj-table');
-    if (!rows.length) { el.innerHTML = '<div style="color:#888780">No leads match these filters</div>'; return; }
+    const ljPager = document.getElementById('lj-pager');
+    if (!rows.length) {
+      el.innerHTML = '<div style="color:#888780">No leads match these filters</div>';
+      if (ljPager) ljPager.style.display = 'none';
+      return;
+    }
+
+    // Pagination — the list used to be hard-cut at 200 rows with no way to see
+    // the rest, which quietly hid leads whenever the window was busy.
+    const ljPageSizeEl = document.getElementById('lj-page-size');
+    const ljPageSize = parseInt((ljPageSizeEl && ljPageSizeEl.value) || '50', 10);
+    const ljTotalPages = Math.max(1, Math.ceil(rows.length / ljPageSize));
+    if (ljPage >= ljTotalPages) ljPage = ljTotalPages - 1;
+    if (ljPage < 0) ljPage = 0;
+    const ljStart = ljPage * ljPageSize;
+    const ljAll = rows;
+    rows = rows.slice(ljStart, ljStart + ljPageSize);
+    if (ljPager) {
+      ljPager.style.display = 'flex';
+      document.getElementById('lj-pager-label').textContent =
+        `Showing ${ljStart + 1}–${Math.min(ljStart + ljPageSize, ljAll.length)} of ${ljAll.length} · page ${ljPage + 1}/${ljTotalPages}`;
+      const prev = document.getElementById('lj-prev'), next = document.getElementById('lj-next');
+      prev.disabled = ljPage === 0; next.disabled = ljPage >= ljTotalPages - 1;
+      prev.style.opacity = prev.disabled ? '.4' : '1';
+      next.style.opacity = next.disabled ? '.4' : '1';
+    }
 
     // Journey chips: Created → Converted → Contacted → Meeting → Deal → Won
     const chip = (label, on) => `<span style="display:inline-block;padding:2px 7px;border-radius:999px;font-size:10px;margin-right:3px;${on ? 'background:#E6F1FB;color:#0C447C;font-weight:500' : 'background:#F1EFE8;color:#B8B6AE'}">${label}</span>`;
     el.innerHTML = `<table>
       <thead><tr>
-        <th>Lead</th><th>Created</th><th>Source / UTM</th><th>First conversion</th>
-        <th>Journey</th><th style="text-align:right">To contact</th><th>Deal</th>
+        ${sortTh('journey', 'name', 'Lead')}
+        ${sortTh('journey', 'created_at', 'Created')}
+        ${sortTh('journey', 'source', 'Source / UTM')}
+        ${sortTh('journey', 'origin', 'Source event', { title: 'Offline event tag, falling back to the web conversion' })}
+        ${sortTh('journey', 'stages', 'Journey', { title: 'How far the lead got' })}
+        ${sortTh('journey', 'to_contact', 'To contact', { num: true })}
+        ${sortTh('journey', 'deal', 'Deal', { num: true })}
       </tr></thead>
-      <tbody>${rows.slice(0, 200).map(r => {
+      <tbody>${rows.map(r => {
         const has = s => (r.stages || []).includes(s);
         // Show every UTM param present, even when utm_campaign is missing
         const utmTag = (k, v) => v
@@ -1162,10 +1375,13 @@
   let pvCache = {};
   function setPvScope(s) {
     pvScope = s;
-    document.getElementById('pv-tab-open').style.background = s === 'open' ? '#fff' : 'transparent';
-    document.getElementById('pv-tab-open').style.fontWeight = s === 'open' ? '500' : '400';
-    document.getElementById('pv-tab-quarter').style.background = s === 'quarter' ? '#fff' : 'transparent';
-    document.getElementById('pv-tab-quarter').style.fontWeight = s === 'quarter' ? '500' : '400';
+    // Data-driven so adding a scope means adding a button, nothing else.
+    ['open', 'quarter', 'next_quarter'].forEach(k => {
+      const el = document.getElementById('pv-tab-' + k);
+      if (!el) return;
+      el.style.background = s === k ? '#fff' : 'transparent';
+      el.style.fontWeight = s === k ? '500' : '400';
+    });
     loadPipelineView();
   }
   window.setPvScope = setPvScope;
@@ -1189,8 +1405,12 @@
       } catch (e) { box.innerHTML = `<div style="color:#791F1F">${e.message}</div>`; return; }
     }
     const m = d.metrics;
+    const scopeLabel =
+      pvScope === 'quarter' ? `· close date in ${d.quarter}` :
+      pvScope === 'next_quarter' ? `· close date in ${d.quarter} (next)` :
+      '· open deals';
     document.getElementById('pv-context').textContent =
-      (pvScope === 'quarter' ? `· close date in ${d.quarter}` : '· open deals') +
+      scopeLabel +
       (pipeline === 'all' ? ' · all pipelines' : '') + (owner === 'all' ? ' · all owners' : '');
     const card = (lbl, mm) => `
       <div class="stat" style="padding:12px">
@@ -1211,8 +1431,10 @@
       </div>
     </div>`;
 
+    renderPvHistory(d);
+
     // Deal list only when the view differs from the default table below
-    if (pvScope === 'quarter' || pipeline === 'all' || owner === 'all') {
+    if (pvScope === 'quarter' || pvScope === 'next_quarter' || pipeline === 'all' || owner === 'all') {
       const statusBadge = s => s === 'won' ? '<span class="badge" style="background:#E1F5EE;color:#0F6E56">Won</span>'
         : s === 'lost' ? '<span class="badge" style="background:#FCEBEB;color:#791F1F">Lost</span>'
         : '<span class="badge" style="background:#E6F1FB;color:#0C447C">Open</span>';
@@ -1238,6 +1460,56 @@
     }
   }
   window.loadPipelineView = loadPipelineView;
+
+  /* Previous quarters — closed history alongside whatever window is selected.
+     Quarter panels are easy to read in isolation and impossible to judge: a
+     $972k quarter means nothing without knowing the last four. Win rate is by
+     COUNT of decided deals (won + lost), so a big open deal parked in an old
+     quarter can't inflate it. */
+  function renderPvHistory(d) {
+    const box = document.getElementById('pv-history');
+    if (!box) return;
+    const hist = (d.history || []).filter(h => !h.error);
+    if (!hist.length) { box.innerHTML = ''; return; }
+
+    const t = d.history_totals || {};
+    const bars = hist.map(h => h.won_amount || 0);
+    const max = Math.max(...bars, 1);
+
+    // Current selection compared against the historical average — the whole
+    // reason to show history at all.
+    const cur = d.metrics && d.metrics.closed ? d.metrics.closed.amount : 0;
+    const avg = t.avg_per_quarter || 0;
+    const deltaPct = avg ? Math.round(((cur - avg) / avg) * 100) : null;
+
+    box.innerHTML = `
+      <div style="border-top:0.5px solid rgba(0,0,0,0.08);margin-top:16px;padding-top:14px">
+        <div style="display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;margin-bottom:10px">
+          <span style="font-size:13px;font-weight:600">Previous quarters</span>
+          <span style="font-size:11.5px;color:#888780">
+            last ${hist.length} closed · ${fmtMoney(t.won_amount || 0)} won · avg ${fmtMoney(avg)}/quarter
+          </span>
+          ${deltaPct != null && cur > 0 ? `
+            <span style="font-size:11px;font-weight:600;padding:2px 9px;border-radius:999px;background:${deltaPct >= 0 ? '#E1F5EE' : '#FCEBEB'};color:${deltaPct >= 0 ? '#0F6E56' : '#791F1F'}">
+              ${d.quarter} ${deltaPct >= 0 ? '+' : ''}${deltaPct}% vs avg
+            </span>` : ''}
+        </div>
+        <div style="display:grid;grid-template-columns:repeat(${hist.length},1fr);gap:10px">
+          ${hist.map(h => `
+            <div class="stat" style="padding:11px">
+              <div class="lbl">${escapeHtml(h.quarter)}</div>
+              <div class="val" style="font-size:18px">${fmtMoneyK(h.won_amount)}</div>
+              <div style="height:4px;background:#EFEDE6;border-radius:2px;margin:6px 0 5px">
+                <div style="height:100%;width:${Math.round(((h.won_amount || 0) / max) * 100)}%;background:#0F6E56;border-radius:2px"></div>
+              </div>
+              <div style="font-size:11px;color:#888780">
+                ${h.won_count} won${h.lost_count ? ` · ${h.lost_count} lost` : ''}${h.win_rate != null ? ` · ${h.win_rate}%` : ''}
+              </div>
+              ${h.avg_won ? `<div style="font-size:10.5px;color:#A8A69E;margin-top:1px">avg ${fmtMoneyK(h.avg_won)}</div>` : ''}
+            </div>`).join('')}
+        </div>
+      </div>`;
+  }
 
   function renderPipelineMetrics() {
     const m = salesData.pipeline?.metrics || {};
@@ -2159,6 +2431,9 @@
       (r.email || '').toLowerCase().includes(search) || (r.form_name || '').toLowerCase().includes(search) ||
       (r.owner || '').toLowerCase().includes(search));
 
+    rows = sortRows(rows, 'forms');
+    formsFiltered = rows;
+
     const missed = rows.filter(r => !r.contacted).length;
     const chip = (n, l, color) => `<div style="background:rgba(255,255,255,.55);border-radius:10px;padding:8px 16px;"><div style="font-weight:700;font-size:18px;color:${color}">${n}</div><div style="font-size:11px;color:#5F5E5A">${l}</div></div>`;
     const excluded = (formsCache.hidden_non_ds || 0) + (formsCache.hidden_customers || 0);
@@ -2194,10 +2469,19 @@
 
     t.innerHTML = `<div style="overflow-x:auto"><table>
       <thead><tr>
-        <th>Contacted</th><th>Submitted</th><th>Contact</th><th>Company</th><th>Type</th><th>Form / meeting</th>
-        <th>Owner</th><th>Last contacted</th><th class="num" title="Days from submission to first touch after it">Days→touch</th>
-        <th class="num" title="Total sales touches on record">Touches</th><th class="num" title="Total form submissions ever">Subs</th>
-        <th>Source</th><th></th>
+        ${sortTh('forms', 'contacted', 'Contacted')}
+        ${sortTh('forms', 'submitted_at', 'Submitted')}
+        ${sortTh('forms', 'name', 'Contact')}
+        ${sortTh('forms', 'company', 'Company')}
+        ${sortTh('forms', 'submission_type', 'Type')}
+        ${sortTh('forms', 'form_name', 'Form / meeting')}
+        ${sortTh('forms', 'owner', 'Owner')}
+        ${sortTh('forms', 'last_contacted', 'Last contacted')}
+        ${sortTh('forms', 'days_to_contact', 'Days→touch', { num: true, title: 'Days from submission to first touch after it' })}
+        ${sortTh('forms', 'times_contacted', 'Touches', { num: true, title: 'Total sales touches on record' })}
+        ${sortTh('forms', 'total_submissions', 'Subs', { num: true, title: 'Total form submissions ever' })}
+        ${sortTh('forms', 'source', 'Source')}
+        <th></th>
       </tr></thead>
       <tbody>${rows.map(r => `
         <tr style="${!r.contacted ? 'background:rgba(163,45,45,.06);' : ''}">
