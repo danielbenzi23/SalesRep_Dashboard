@@ -554,12 +554,36 @@ export default async function handler(req, res) {
           if (ownerScope === 'me') hFilters.push({ propertyName: 'hubspot_owner_id', operator: 'EQ', value: ownerId });
           try {
             const raw = await fetchAll(hsToken, 'deals', hFilters,
-              ['amount', 'dealstage', 'closedate', 'hs_is_closed', 'hs_is_closed_won'],
+              ['amount', 'dealstage', 'closedate', 'createdate', 'hs_is_closed', 'hs_is_closed_won'],
               [{ propertyName: 'amount', direction: 'DESCENDING' }], 3);
             const rows = raw.map(d => d.properties);
-            const won = rows.filter(isWon);
+            const won  = rows.filter(isWon);
             const lost = rows.filter(d => isClosed(d) && !isWon(d));
-            const wonAmt = won.reduce((s, d) => s + num(d.amount), 0);
+            // Still open but carrying a close date inside a quarter that already
+            // ended — i.e. deals that slipped. Worth seeing, not worth hiding.
+            const openRows = rows.filter(d => !isClosed(d));
+
+            const hTotal    = rows.reduce((s, d) => s + num(d.amount), 0);
+            const hWeighted = rows.reduce((s, d) => s + num(d.amount) * probOf(d), 0);
+            const hOpenAmt  = openRows.reduce((s, d) => s + num(d.amount), 0);
+            const wonAmt    = won.reduce((s, d) => s + num(d.amount), 0);
+
+            // "New" for a past quarter = deals CREATED inside it (same meaning as
+            // the header card), regardless of when they closed.
+            const newRows = rows.filter(d => d.createdate
+              && new Date(d.createdate) >= start && new Date(d.createdate) <= end);
+            const newAmt = newRows.reduce((s, d) => s + num(d.amount), 0);
+
+            // For a finished quarter, "average deal age" of open deals is noise —
+            // the clock never stopped. The useful equivalent is the sales cycle of
+            // the deals that actually closed won: create date → close date.
+            const cycles = won
+              .filter(d => d.createdate && d.closedate)
+              .map(d => (new Date(d.closedate) - new Date(d.createdate)) / 86400000)
+              .filter(v => v >= 0);
+            const avgCycleMonths = cycles.length
+              ? (cycles.reduce((s, v) => s + v, 0) / cycles.length) / 30.44 : 0;
+
             const decided = won.length + lost.length;
             return {
               quarter: name,
@@ -567,9 +591,21 @@ export default async function handler(req, res) {
               deals: rows.length,
               won_count: won.length,
               lost_count: lost.length,
+              open_count: openRows.length,
               won_amount: Math.round(wonAmt),
               avg_won: won.length ? Math.round(wonAmt / won.length) : 0,
-              win_rate: decided ? Math.round((won.length / decided) * 100) : null
+              // Null (not 0%) when nothing was decided, and flagged when nobody
+              // ever marks deals lost — a 100% rate then means "unrecorded", not "perfect".
+              win_rate: decided ? Math.round((won.length / decided) * 100) : null,
+              no_losses_recorded: decided > 0 && lost.length === 0,
+              metrics: {
+                total:    { amount: Math.round(hTotal),    count: rows.length,     avg: rows.length ? Math.round(hTotal / rows.length) : 0 },
+                weighted: { amount: Math.round(hWeighted), count: rows.length,     avg: rows.length ? Math.round(hWeighted / rows.length) : 0 },
+                open:     { amount: Math.round(hOpenAmt),  count: openRows.length, avg: openRows.length ? Math.round(hOpenAmt / openRows.length) : 0 },
+                closed:   { amount: Math.round(wonAmt),    count: won.length,      avg: won.length ? Math.round(wonAmt / won.length) : 0 },
+                new:      { amount: Math.round(newAmt),    count: newRows.length,  avg: newRows.length ? Math.round(newAmt / newRows.length) : 0 },
+                avg_cycle_months: Math.round(avgCycleMonths * 10) / 10
+              }
             };
           } catch {
             return { quarter: name, start: start.toISOString().slice(0, 10), error: true };
@@ -582,6 +618,12 @@ export default async function handler(req, res) {
       const histTotals = {
         won_amount: okHist.reduce((s, h) => s + (h.won_amount || 0), 0),
         won_count: okHist.reduce((s, h) => s + (h.won_count || 0), 0),
+        total_amount: okHist.reduce((s, h) => s + (h.metrics?.total.amount || 0), 0),
+        new_amount: okHist.reduce((s, h) => s + (h.metrics?.new.amount || 0), 0),
+        new_count: okHist.reduce((s, h) => s + (h.metrics?.new.count || 0), 0),
+        lost_count: okHist.reduce((s, h) => s + (h.lost_count || 0), 0),
+        // True when not a single deal was marked Closed Lost in four quarters.
+        no_losses_recorded: okHist.length > 0 && okHist.every(h => h.lost_count === 0),
         quarters: okHist.length
       };
       histTotals.avg_per_quarter = histTotals.quarters
