@@ -57,10 +57,14 @@
   .cp .bant-dots { display:inline-flex; gap:4px; }
   .cp .bant-dots span { width:14px; height:14px; border-radius:4px; font-size:9px; display:inline-flex; align-items:center; justify-content:center; font-weight:700; color:#fff; }
   .cp .bant-dots .asked { background:#0DA88C; } .cp .bant-dots .partially { background:#ED9511; } .cp .bant-dots .not_asked { background:#D5D9E2; color:#64748B; }
-  .cp .radar-grid { display:grid; grid-template-columns:repeat(auto-fit, minmax(210px, 1fr)); gap:10px; }
-  .cp .radar-card { background:#F7F7F4; border-radius:10px; padding:10px 10px 6px; text-align:center; }
-  .cp .radar-card .name { font-size:12.5px; font-weight:600; margin-bottom:2px; }
-  .cp .radar-card .sub { font-size:11px; color:#888780; margin-bottom:4px; }
+  /* Two radars per row. With five across, each shape was ~200px wide and the
+     six axis labels crowded the plot; at two per row the same viewBox renders
+     about 1.8x larger, so the shape is readable without changing its geometry. */
+  .cp .radar-grid { display:grid; grid-template-columns:repeat(2, minmax(0,1fr)); gap:16px; }
+  .cp .radar-card { background:#F7F7F4; border-radius:10px; padding:16px 12px 10px; text-align:center; }
+  .cp .radar-card .name { font-size:14px; font-weight:600; margin-bottom:2px; }
+  .cp .radar-card .sub { font-size:12px; color:#888780; margin-bottom:6px; }
+  .cp .radar-card svg { max-width:460px; }
   .cp .legend { display:flex; flex-wrap:wrap; gap:6px 14px; font-size:12px; color:#5F5E5A; margin:6px 0 2px; }
   .cp .legend .item { display:inline-flex; align-items:center; gap:6px; cursor:pointer; user-select:none; }
   .cp .legend .item.off { opacity:.35; }
@@ -73,7 +77,7 @@
   .cp .error { background:#FCEBEB; color:#791F1F; padding:10px 14px; border-radius:8px; margin-bottom:12px; font-size:13px; }
   .cp svg text { font-family:inherit; }
   .cp-tip { position:fixed; pointer-events:none; background:#1A1A1A; color:#fff; font-size:11.5px; padding:8px 10px; border-radius:8px; z-index:60; display:none; max-width:280px; line-height:1.45; }
-  @media (max-width: 900px) { .cp .kpi-row { grid-template-columns:repeat(2,1fr); } .cp .grid-2 { grid-template-columns:1fr; } }`;
+  @media (max-width: 900px) { .cp .kpi-row { grid-template-columns:repeat(2,1fr); } .cp .grid-2 { grid-template-columns:1fr; } .cp .radar-grid { grid-template-columns:1fr; } }`;
 
   function injectCss() {
     if (document.getElementById('cp-css')) return;
@@ -262,10 +266,12 @@
       const labels = AXES.map((ax, i) => { const a = -Math.PI / 2 + i * 2 * Math.PI / n; const lx = cx + (R + 18) * Math.cos(a), ly = cy + (R + 18) * Math.sin(a); const anchor = Math.abs(Math.cos(a)) < 0.2 ? 'middle' : (Math.cos(a) > 0 ? 'start' : 'end'); return `<text x="${lx}" y="${ly + 4}" font-size="10" fill="#64748B" text-anchor="${anchor}">${ax.label}</text>`; }).join('');
       const col = colorFor(rep.id);
       const dots = AXES.map((ax, i) => { const [x, y] = pt(i, rep.axes[ax.id]); return `<circle cx="${x}" cy="${y}" r="3.5" fill="${col}" stroke="#fff" stroke-width="1.5"><title>${ax.label}: ${fmt(rep.axes[ax.id])} (team ${fmt(team.axes[ax.id])})</title></circle>`; }).join('');
+      // No inline max-width here: the .cp .radar-card svg rule in CSS owns the
+      // size, and an inline style would override it and keep the old 260px cap.
       return `<div class="radar-card">
         <div class="name"><span class="dot" style="background:${col}"></span>${esc(rep.name)}</div>
         <div class="sub">${rep.calls} call${rep.calls === 1 ? '' : 's'} · overall ${fmt(rep.overall)}</div>
-        <svg viewBox="0 0 ${W} ${size}" width="100%" style="max-width:260px" role="img" aria-label="Skill radar for ${esc(rep.name)}">
+        <svg viewBox="0 0 ${W} ${size}" width="100%" role="img" aria-label="Skill radar for ${esc(rep.name)}">
           ${rings}${spokes}
           <polygon points="${poly(team.axes)}" fill="rgba(51,65,85,.10)" stroke="rgba(51,65,85,.45)" stroke-width="1.5" stroke-dasharray="3 3"/>
           <polygon points="${poly(rep.axes)}" fill="${col}22" stroke="${col}" stroke-width="2" stroke-linejoin="round"/>
