@@ -18,6 +18,13 @@ const DS_PIPELINE = '23928898';
 // Jay · Michael · Charles · Drew
 const DS_SALES_OWNERS = new Set(['118972528', '84179396', '90988586', '30458491']);
 
+// The whole-team selection. A sentinel rather than an empty ownerId, so that
+// "no rep chosen" and "every rep chosen" cannot be confused by any caller.
+const ALL_REPS = '__all__';
+// Read from OWNER_ID_TO_NAME, not DS_SALES_OWNERS: that set is missing Cody
+// (80532547), so using it here would silently drop a rep from the team totals.
+const ALL_REP_IDS = () => Object.keys(OWNER_ID_TO_NAME);
+
 // Unassigned contacts stay visible: a brand-new form fill has no owner yet,
 // and hiding it would hide exactly the leads that need routing.
 const isDsSalesOwned = ownerId => !ownerId || DS_SALES_OWNERS.has(String(ownerId));
@@ -436,12 +443,27 @@ export default async function handler(req, res) {
     // admin/manager — can pass ?ownerId; default to first rep
     const url = new URL(req.url, `http://${req.headers.host || 'x'}`);
     const requested = url.searchParams.get('ownerId');
-    ownerId = (requested && OWNER_ID_TO_NAME[requested]) ? requested : '80532547';
+    ownerId = requested === ALL_REPS ? ALL_REPS
+            : (requested && OWNER_ID_TO_NAME[requested]) ? requested
+            : '80532547';
   }
+  // Whole-team view. Everything that is a sum (pipeline, activity counts, won
+  // and lost, quota) adds up across the five reps. Everything that is about one
+  // person — logging an activity on their behalf, their rank against the team,
+  // their personal to-do list — cannot, and says so rather than guessing.
+  const isAllReps = ownerId === ALL_REPS;
 
   // Early route: Today AI hero payload (rep health + confidence + rank + Claude todos)
   const urlObj = new URL(req.url, `http://${req.headers.host || 'x'}`);
   if (urlObj.searchParams.get('action') === 'today_ai') {
+    // This payload is a rep's health score, their rank against the team and
+    // their own three things to do today. None of those exist for "everyone".
+    // Returning a clear refusal lets the UI hide the hero; returning zeros
+    // would have drawn a score of 0 and a rank of null as if they were real.
+    if (isAllReps) {
+      return res.status(400).json({ error: 'not_applicable_to_team',
+        detail: 'Health score, rank and daily to-dos are per rep. Pick a rep to see them.' });
+    }
     const nm = OWNER_ID_TO_NAME[ownerId] || 'Unknown';
     const q = REP_ANNUAL_QUOTA[ownerId] || 0;
     return todayAiHandler({ hsToken, ownerId, ownerName: nm, annualQuota: q, res });
@@ -455,7 +477,13 @@ export default async function handler(req, res) {
       const rawScope = urlObj.searchParams.get('scope');
       const scope = ['quarter', 'next_quarter'].includes(rawScope) ? rawScope : 'open';
       const pipelineSel = urlObj.searchParams.get('pipeline') === 'all' ? 'all' : 'ds';
+      // "me" means the current selection, and when that selection IS the team,
+      // an EQ on the sentinel would have matched nothing and shown an empty
+      // pipeline instead of the team's.
       const ownerScope = urlObj.searchParams.get('owner') === 'all' ? 'all' : 'me';
+      const pvOwnerFilter = isAllReps
+        ? { propertyName: 'hubspot_owner_id', operator: 'IN', values: ALL_REP_IDS() }
+        : { propertyName: 'hubspot_owner_id', operator: 'EQ', value: ownerId };
       const nowPv = new Date();
       // The window this view is about: current quarter, the next one, or (for
       // "open") the current one, which the header still labels.
@@ -464,7 +492,7 @@ export default async function handler(req, res) {
 
       const filters = [];
       if (pipelineSel === 'ds') filters.push({ propertyName: 'pipeline', operator: 'EQ', value: DS_PIPELINE });
-      if (ownerScope === 'me') filters.push({ propertyName: 'hubspot_owner_id', operator: 'EQ', value: ownerId });
+      if (ownerScope === 'me') filters.push(pvOwnerFilter);
       if (scope === 'quarter' || scope === 'next_quarter') {
         filters.push({ propertyName: 'closedate', operator: 'BETWEEN', value: qS.toISOString(), highValue: qE.toISOString() });
       } else {
@@ -551,7 +579,7 @@ export default async function handler(req, res) {
             { propertyName: 'closedate', operator: 'BETWEEN', value: start.toISOString(), highValue: end.toISOString() }
           ];
           if (pipelineSel === 'ds') hFilters.push({ propertyName: 'pipeline', operator: 'EQ', value: DS_PIPELINE });
-          if (ownerScope === 'me') hFilters.push({ propertyName: 'hubspot_owner_id', operator: 'EQ', value: ownerId });
+          if (ownerScope === 'me') hFilters.push(pvOwnerFilter);
           try {
             const raw = await fetchAll(hsToken, 'deals', hFilters,
               ['amount', 'dealstage', 'closedate', 'createdate', 'hs_is_closed', 'hs_is_closed_won'],
@@ -1030,6 +1058,12 @@ export default async function handler(req, res) {
   // Logging actions — POST engagement to HubSpot on behalf of the current rep
   if (req.method === 'POST' && ['log_email', 'log_meeting', 'log_note'].includes(urlObj.searchParams.get('action'))) {
     const action = urlObj.searchParams.get('action');
+    // An engagement is owned by one person. Writing it with the team sentinel
+    // would create a HubSpot record owned by nobody.
+    if (isAllReps) {
+      return res.status(400).json({ error: 'pick_a_rep',
+        detail: 'Logging an activity records it against one rep. Choose a rep in the selector first.' });
+    }
     let payload;
     try { payload = typeof req.body === 'object' ? req.body : JSON.parse(req.body || '{}'); }
     catch { return res.status(400).json({ error: 'Invalid JSON body' }); }
@@ -1119,8 +1153,12 @@ export default async function handler(req, res) {
     }
   }
 
-  const ownerName = OWNER_ID_TO_NAME[ownerId] || 'Unknown';
-  const annualQuota = REP_ANNUAL_QUOTA[ownerId] || 0;
+  const ownerName = isAllReps ? 'All reps' : (OWNER_ID_TO_NAME[ownerId] || 'Unknown');
+  // Team quota is the sum of the individual quotas, so attainment stays a
+  // like-for-like percentage instead of one rep's target against team revenue.
+  const annualQuota = isAllReps
+    ? ALL_REP_IDS().reduce((n, id) => n + (REP_ANNUAL_QUOTA[id] || 0), 0)
+    : (REP_ANNUAL_QUOTA[ownerId] || 0);
 
   const now = new Date();
   const todayStart = startOfDayUTC(now);
@@ -1133,7 +1171,11 @@ export default async function handler(req, res) {
   const sevenDaysAgo  = new Date(now.getTime() - 7  * 86400000);
   const thirtyDaysAgo = new Date(now.getTime() - 30 * 86400000);
 
-  const ownerFilter = { propertyName: 'hubspot_owner_id', operator: 'EQ', value: ownerId };
+  // One filter, reused by all 22 queries below — so the team view is a single
+  // EQ → IN swap rather than 22 separate edits that could drift apart.
+  const ownerFilter = isAllReps
+    ? { propertyName: 'hubspot_owner_id', operator: 'IN', values: ALL_REP_IDS() }
+    : { propertyName: 'hubspot_owner_id', operator: 'EQ', value: ownerId };
   const pipelineFilter = { propertyName: 'pipeline', operator: 'EQ', value: DS_PIPELINE };
 
   // Helper: count of an engagement object in a date window
@@ -1538,7 +1580,8 @@ export default async function handler(req, res) {
     res.setHeader('Cache-Control', 'no-store');
   }
   return res.status(200).json({
-    rep: { ownerId, name: ownerName, email: user.email, role: user.role, annualQuota },
+    rep: { ownerId, name: ownerName, email: user.email, role: user.role, annualQuota,
+           isAllReps, repCount: isAllReps ? ALL_REP_IDS().length : 1 },
     asOf: now.toISOString(),
     quarter: { name: qName, start: qStart.toISOString(), end: qEnd.toISOString(), days_left: daysLeftQuarter, quota: quarterQuota, closed: closedQuarter },
     today: {
@@ -1565,7 +1608,8 @@ export default async function handler(req, res) {
     recent: { won: recentWon, lost: recentLost },
     // Available reps for admin/manager dropdown
     available_reps: (user.role === 'admin' || user.role === 'manager')
-      ? Object.entries(OWNER_ID_TO_NAME).map(([id, name]) => ({ ownerId: id, name }))
+      ? [{ ownerId: ALL_REPS, name: 'All reps (team)' },
+         ...Object.entries(OWNER_ID_TO_NAME).map(([id, name]) => ({ ownerId: id, name }))]
       : null
   });
 }
