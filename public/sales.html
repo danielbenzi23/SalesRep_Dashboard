@@ -94,6 +94,7 @@
 <script>window.va = window.va || function () { (window.vaq = window.vaq || []).push(arguments); };</script>
 <script defer src="/_vercel/insights/script.js"></script>
 <script defer src="/_vercel/speed-insights/script.js"></script>
+<script src="/call-performance.js"></script>
 <script>
   // Auto-track tab clicks as custom events (dashboards are SPA, URL doesn't change)
   document.addEventListener('click', (e) => {
@@ -228,6 +229,7 @@
     <div class="tab" data-tab="dossier">Dossier</div>
     <div class="tab" data-tab="conversations">Conversations</div>
     <div class="tab" data-tab="meeting-intel">Meeting intel</div>
+    <div class="tab" data-tab="calls">Call performance</div>
     <div class="tab" data-tab="goals">My goals</div>
     <div class="tab" data-tab="recent">Recent</div>
   </div>
@@ -806,6 +808,11 @@
       </div>
     </div>
 
+    <!-- CALL PERFORMANCE (scored Zoom sales calls: BANT, next step, intake basics) -->
+    <div data-panel="calls" style="display:none">
+      <div id="call-perf-root"></div>
+    </div>
+
     <!-- RECENT -->
     <div data-panel="recent" style="display:none">
       <div class="grid-2">
@@ -927,6 +934,7 @@
       if (activeTab === 'forms') loadForms();
       if (activeTab === 'emails') loadEmails();
       if (activeTab === 'pipeline') loadPipelineView();
+      if (activeTab === 'calls') loadCallPerformance();
     };
   }
 
@@ -3847,8 +3855,26 @@
       if (target === 'signals') loadSignals();
       if (target === 'meeting-intel') loadMeetingIntel();
       if (target === 'buyer-intel') loadBuyerIntel();
+      if (target === 'calls') loadCallPerformance();
     };
   });
+
+  // Call performance tab: shared widget (/call-performance.js). "My calls" follows
+  // the rep selector for admins/managers and the logged-in rep for sales; "Whole
+  // team" shows every rep to everyone.
+  let callPerfWidget = null;
+  function loadCallPerformance() {
+    const root = document.getElementById('call-perf-root');
+    if (!root || !window.CallPerf) return;
+    if (!callPerfWidget) {
+      callPerfWidget = CallPerf.mount(root, {
+        role: me?.role || 'sales',
+        getOwnerId: () => salesData?.rep?.ownerId || document.getElementById('rep-select')?.value || null
+      });
+    } else {
+      callPerfWidget.rerender();
+    }
+  }
 
   // Conversations filters
   ['tr-search', 'tr-sentiment', 'tr-period', 'tr-page-size'].forEach(id => {

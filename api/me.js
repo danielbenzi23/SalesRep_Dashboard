@@ -1,5 +1,5 @@
 // /api/me - returns the current user's info + allowed tabs
-import { verifyAuthCookie } from '../lib/auth.js';
+import { verifyAuthCookie, EMAIL_TO_OWNER_ID, OWNER_ID_TO_NAME } from '../lib/auth.js';
 
 export default async function handler(req, res) {
   const token = process.env.DASHBOARD_TOKEN;
@@ -14,5 +14,9 @@ export default async function handler(req, res) {
     res.status(401).json({ error: 'Not authenticated' });
     return;
   }
-  res.status(200).json(user);
+  const owner_id = EMAIL_TO_OWNER_ID[user.email] || null;
+  const reps = (user.role === 'admin' || user.role === 'manager')
+    ? Object.entries(OWNER_ID_TO_NAME).map(([ownerId, name]) => ({ ownerId, name }))
+    : null;
+  res.status(200).json({ ...user, owner_id, reps });
 }

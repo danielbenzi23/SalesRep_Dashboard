@@ -1,7 +1,7 @@
 // Vercel Edge Middleware - multi-user auth gate
 // Cookie: auth=<email>:<hmac> (HMAC-SHA256 of email using DASHBOARD_TOKEN as secret)
 
-import { verifyAuthCookie, canViewCallPerformance } from './lib/auth.js';
+import { verifyAuthCookie } from './lib/auth.js';
 
 export const config = {
   matcher: ['/((?!api/login|api/logout|api/me|login\\.html|_next|favicon\\.ico).*)']
@@ -27,10 +27,6 @@ export default async function middleware(request) {
   const cookies = request.headers.get('cookie') || '';
   const match = cookies.match(/(?:^|;\s*)auth=([^;]+)/);
   const user = match ? await verifyAuthCookie(match[1], token) : null;
-  if (!user) return Response.redirect(new URL('/login.html', request.url), 302);
-  // Call performance dashboard: allowlisted viewers only (see lib/auth.js).
-  if (url.pathname.startsWith('/call-performance') && !canViewCallPerformance(user.email)) {
-    return Response.redirect(new URL('/sales.html', request.url), 302);
-  }
-  return;
+  if (user) return;
+  return Response.redirect(new URL('/login.html', request.url), 302);
 }

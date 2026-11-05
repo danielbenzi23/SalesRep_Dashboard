@@ -5,9 +5,10 @@
 // n8n "Sales Call Scoring" workflow (BANT, next step, intake basics). Nothing is
 // computed here beyond aggregation — the scoring itself lives in HubSpot.
 //
-// Access: cookie auth + CALL_PERFORMANCE_VIEWERS allowlist (lib/auth.js).
+// Access: any logged-in user. Everyone can see the whole team; the widget
+// decides whether to focus on one rep (the viewer, or the selected rep).
 
-import { verifyAuthCookie, canViewCallPerformance, OWNER_ID_TO_NAME } from '../lib/auth.js';
+import { verifyAuthCookie, EMAIL_TO_OWNER_ID, OWNER_ID_TO_NAME } from '../lib/auth.js';
 
 export const config = { maxDuration: 60 };
 
@@ -124,7 +125,6 @@ export default async function handler(req, res) {
     const m = cookies.match(/(?:^|;\s*)auth=([^;]+)/);
     const user = m ? await verifyAuthCookie(m[1], token) : null;
     if (!user) return res.status(401).json({ error: 'Not authenticated' });
-    if (!canViewCallPerformance(user.email)) return res.status(403).json({ error: 'Not authorized for the call performance dashboard' });
     if (req.method !== 'GET') return res.status(405).json({ error: 'Method not allowed' });
 
     const url = new URL(req.url, `http://${req.headers.host || 'x'}`);
@@ -200,6 +200,8 @@ export default async function handler(req, res) {
       filters: { days: days || 'all', type },
       intake_items: INTAKE_ITEMS,
       rep_names: OWNER_ID_TO_NAME,
+      my_owner_id: EMAIL_TO_OWNER_ID[user.email] || null,
+      role: user.role,
       team: summarize(calls),
       reps,
       trend,
