@@ -12,7 +12,17 @@ import { verifyAuthCookie, EMAIL_TO_OWNER_ID, OWNER_ID_TO_NAME } from '../lib/au
 
 export const config = { maxDuration: 60 };
 
-const REPS = ['118972528', '84179396', '90988586', '30458491', '80532547']; // Jay, Michael, Charles, Drew, Cody
+// Cody (80532547) is deliberately out of the call-scoring view. He is not
+// carrying a calling quota, and a single scored call was moving the team
+// average that every rep is measured against: with him in, one call weighed the
+// same as Charles's thirty.
+//
+// This exclusion lives here rather than in the widget on purpose. `team` below
+// is summarise(calls) over this same list, so dropping him here also recomputes
+// the team average, the rank and the grey comparison shape on the radar. Hiding
+// him in the UI instead would have shown four reps compared against a five-rep
+// average.
+const REPS = ['118972528', '84179396', '90988586', '30458491']; // Jay, Michael, Charles, Drew
 
 // Call types that count as "sales calls" for the default view. Check-ins are
 // customer relationship calls where BANT is not the point, so they are hidden
