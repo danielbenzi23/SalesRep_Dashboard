@@ -3223,10 +3223,12 @@
         <div style="padding:20px 30px 6px;display:flex;gap:16px;align-items:center;">
           <div style="width:54px;height:54px;border:1px solid #E3E8F0;border-radius:12px;display:grid;place-items:center;font:700 18px Inter,sans-serif;color:#12305B;flex:none;">${initials}</div>
           <div>
-            <div style="font:700 26px Inter,sans-serif;color:#0A1F3C;">${escapeHtml(d.school_name || '')}</div>
+            <div style="font:700 26px Inter,sans-serif;color:#0A1F3C;">${escapeHtml(d.school_name || '')}${doc.confidence ? `<span title="${escapeHtml(doc.confidence_reason || '')}" style="display:inline-block;margin-left:8px;font-size:9px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;padding:3px 9px;border-radius:999px;${doc.confidence === 'strong' ? 'background:#E5F5F2;color:#0A7D68;' : doc.confidence === 'do_not_send' ? 'background:#FDF0EC;color:#C0472E;' : 'background:#FDF6E8;color:#B4700F;'}">${doc.confidence === 'strong' ? 'Evidence: strong' : doc.confidence === 'do_not_send' ? 'Do not send' : 'Evidence: thin'}</span>` : ''}</div>
             <div style="font-size:12px;color:#5B6B82;margin-top:2px;">${doc.context_line || ''}</div>
+            ${doc.motion && doc.motion !== 'Unclear' ? `<div style="font-size:11px;color:#0A7D68;margin-top:4px;"><b>Motion: ${escapeHtml(doc.motion)}.</b> ${doc.motion_reason || ''}</div>` : ''}
           </div>
         </div>
+        ${(doc.what_they_said || []).length ? `<div style="padding:4px 30px 0;">${secTitle('What they said')}${(doc.what_they_said || []).slice(0, 3).map(q => `<div style="border-left:3px solid #0A1F3C;background:#F7F8FB;border-radius:0 10px 10px 0;padding:12px 16px;margin-bottom:8px;"><div style="font-size:13px;color:#0A1F3C;line-height:1.55;">&ldquo;${escapeHtml(q.quote || '')}&rdquo;</div><div style="font-size:10.5px;color:#5B6B82;margin-top:6px;">${escapeHtml(q.source || 'Source document')}${q.date ? ` · ${escapeHtml(q.date)}` : ''}${q.who ? ` · ${escapeHtml(q.who)}` : ''}</div></div>`).join('')}</div>` : ''}
         <div style="margin:16px 30px;background:${bannerBg[theme]};border:1px solid ${themeColors[theme]}33;border-radius:12px;padding:14px 18px;display:flex;gap:14px;align-items:flex-start;">
           <span style="background:${themeColors[theme]};color:#fff;font:700 9px Inter,sans-serif;letter-spacing:.1em;border-radius:999px;padding:4px 12px;white-space:nowrap;flex:none;margin-top:2px;">${escapeHtml((doc.banner_label || 'WHY IT MATTERS').toUpperCase())}</span>
           <div style="font-size:12px;color:#42526B;line-height:1.55;">${doc.banner_text || ''}</div>
@@ -3237,13 +3239,13 @@
             <div style="font:700 10px Inter,sans-serif;letter-spacing:.12em;color:#0A7D68;margin-bottom:8px;">THREE THINGS THAT DECIDE THIS ACCOUNT</div>
             <ol style="margin:0;padding-left:18px;font-size:12px;color:#42526B;line-height:1.55;">${(doc.tldr || []).map(t => `<li style="margin-bottom:6px;">${t}</li>`).join('')}</ol>
           </div>
-          ${secTitle('The numbers')}
-          <div style="display:flex;gap:10px;flex-wrap:wrap;">${(doc.stats || []).map(stat).join('')}</div>
+          ${(doc.stats || []).length ? `${secTitle('The numbers')}<div style="display:flex;gap:10px;flex-wrap:wrap;">${(doc.stats || []).map(stat).join('')}</div>` : ''}
+          ${(doc.evidence_timeline || []).length ? `${secTitle('Signal timeline')}<table style="width:100%;border-collapse:collapse;border:1px solid #E3E8F0;border-radius:10px;overflow:hidden;"><thead><tr style="background:#0A1F3C;color:#fff;font:700 10px Inter,sans-serif;letter-spacing:.1em;"><td style="padding:7px 10px;">DATE</td><td style="padding:7px 10px;">TYPE</td><td style="padding:7px 10px;">SIGNAL</td><td style="padding:7px 10px;">READ</td></tr></thead><tbody>${(doc.evidence_timeline || []).map(e => `<tr><td style="padding:6px 10px;border-top:1px solid #E9EDF3;font-size:11px;color:#5B6B82;white-space:nowrap;">${escapeHtml(e.date || '')}</td><td style="padding:6px 10px;border-top:1px solid #E9EDF3;font-size:11px;color:#42526B;white-space:nowrap;">${escapeHtml(e.type || '')}</td><td style="padding:6px 10px;border-top:1px solid #E9EDF3;font-size:11px;color:#0A1F3C;">${escapeHtml(String(e.title || '').slice(0, 110))}</td><td style="padding:6px 10px;border-top:1px solid #E9EDF3;font-size:10px;font-weight:700;color:${e.relevance === 3 ? '#0A7D68' : e.relevance === 2 ? '#B4700F' : '#8A97AB'};white-space:nowrap;">${e.relevance === 3 ? 'Stated need' : e.relevance === 2 ? 'Priority' : e.relevance === 1 ? 'Context' : e.relevance === 0 ? 'Noise' : ''}</td></tr>`).join('')}</tbody></table>` : ''}
           ${secTitle('Tech stack & what matters')}
           <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;">
             <div style="border:1px solid #E3E8F0;border-radius:10px;overflow:hidden;">
               <div style="background:#0A1F3C;color:#fff;font:700 10px Inter,sans-serif;letter-spacing:.1em;padding:8px 12px;">SYSTEMS ON FILE</div>
-              ${(doc.stack || []).map(stackRow).join('')}
+              ${(doc.stack || []).length ? (doc.stack || []).map(stackRow).join('') : '<div style="padding:10px 12px;font-size:11.5px;color:#5B6B82;">Not on file. Ask on the first call.</div>'}
             </div>
             <div style="font-size:12px;color:#42526B;line-height:1.55;">${doc.stack_matters || ''}</div>
           </div>

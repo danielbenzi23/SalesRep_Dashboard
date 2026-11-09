@@ -267,7 +267,7 @@ async function fetchHubSpotCompanyData(hsToken, schoolName) {
         filterGroups: [
           { filters: [{ propertyName: 'name', operator: 'CONTAINS_TOKEN', value: candidate }] }
         ],
-        properties: ['name', 'domain', 'hubspot_owner_id', 'lifecyclestage', 'city', 'state'],
+        properties: ['name', 'domain', 'hubspot_owner_id', 'lifecyclestage', 'city', 'state', 'hs_last_sales_activity_timestamp', 'notes_last_updated', 'hs_lastmodifieddate', 'createdate'],
         limit: 3
       });
       const hits = cr.results || [];
@@ -284,15 +284,37 @@ async function fetchHubSpotCompanyData(hsToken, schoolName) {
     const ownerId = company.properties.hubspot_owner_id;
     out.owner_name = OWNER_ID_TO_NAME[ownerId] || (ownerId ? `Owner ${ownerId}` : null);
 
-    // Contacts + deals in parallel
-    const [contactIds, dealIds] = await Promise.all([
+    // Contacts + deals + recent history (notes, meetings) in parallel. The
+    // history is what stops the writer from calling a school we met last
+    // quarter "cold".
+    const [contactIds, dealIds, noteIds, meetingIds] = await Promise.all([
       hsAssociations(hsToken, 'companies', company.id, 'contacts'),
-      hsAssociations(hsToken, 'companies', company.id, 'deals')
+      hsAssociations(hsToken, 'companies', company.id, 'deals'),
+      hsAssociations(hsToken, 'companies', company.id, 'notes'),
+      hsAssociations(hsToken, 'companies', company.id, 'meetings')
     ]);
-    const [contacts, deals] = await Promise.all([
+    const [contacts, deals, notes, meetings] = await Promise.all([
       hsBatchRead(hsToken, 'contacts', contactIds, ['firstname', 'lastname', 'email', 'jobtitle']),
-      hsBatchRead(hsToken, 'deals', dealIds, ['dealname', 'dealstage', 'amount', 'closedate', 'pipeline'])
+      hsBatchRead(hsToken, 'deals', dealIds, ['dealname', 'dealstage', 'amount', 'closedate', 'pipeline']),
+      hsBatchRead(hsToken, 'notes', noteIds.slice(-30), ['hs_note_body', 'hs_timestamp']),
+      hsBatchRead(hsToken, 'meetings', meetingIds.slice(-30), ['hs_meeting_title', 'hs_meeting_outcome', 'hs_meeting_start_time', 'hs_timestamp', 'hs_meeting_body'])
     ]);
+    const stripHtml = t => String(t || '').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+    const cutWords = (t, n) => { const w = stripHtml(t); return w.length <= n ? w : w.slice(0, n).replace(/\s+\S*$/, '') + '…'; };
+    out.history = {
+      last_sales_activity: company.properties.hs_last_sales_activity_timestamp || null,
+      last_note_at: company.properties.notes_last_updated || null,
+      record_created: company.properties.createdate || null,
+      recent_notes: notes
+        .filter(n => n.hs_note_body)
+        .sort((a, b) => String(b.hs_timestamp || '').localeCompare(String(a.hs_timestamp || '')))
+        .slice(0, 3)
+        .map(n => ({ at: n.hs_timestamp || null, text: cutWords(n.hs_note_body, 400) })),
+      recent_meetings: meetings
+        .sort((a, b) => String(b.hs_meeting_start_time || b.hs_timestamp || '').localeCompare(String(a.hs_meeting_start_time || a.hs_timestamp || '')))
+        .slice(0, 3)
+        .map(m => ({ at: m.hs_meeting_start_time || m.hs_timestamp || null, title: m.hs_meeting_title || null, outcome: m.hs_meeting_outcome || null, notes: cutWords(m.hs_meeting_body, 300) || null }))
+    };
     out.contacts = contacts.map(c => ({
       name: [c.firstname, c.lastname].filter(Boolean).join(' '),
       email: c.email || null, title: c.jobtitle || null
@@ -341,6 +363,15 @@ function serverDossierHtml(d) {
   const chip = (c) => `<span style="display:inline-block;background:rgba(255,255,255,.12);border:1px solid rgba(255,255,255,.25);border-radius:999px;padding:4px 12px;font-size:10px;color:#fff;margin:3px 4px 3px 0;"><b>${escS(c.src)}</b> · ${escS(c.detail)}</span>`;
   const watchRow = (w, i) => `<div style="display:flex;gap:12px;background:#FDF6E8;border-radius:10px;padding:12px 14px;margin-bottom:8px;align-items:flex-start;"><div style="width:22px;height:22px;border-radius:50%;background:#B4700F;color:#fff;font:700 11px/22px Inter,sans-serif;text-align:center;flex:none;">${i + 1}</div><div style="font-size:12px;color:#42526B;line-height:1.5;">${w}</div></div>`;
   const secTitle = (t) => `<div style="display:flex;align-items:center;gap:8px;margin:18px 0 10px;"><div style="width:18px;height:2px;background:#15B4A6;"></div><div style="font:700 11px Inter,sans-serif;letter-spacing:.14em;text-transform:uppercase;color:#0A7D68;">${t}</div></div>`;
+  // Evidence first: the institution's own words, with the document and date.
+  const said = (q) => `<div style="border-left:3px solid #0A1F3C;background:#F7F8FB;border-radius:0 10px 10px 0;padding:12px 16px;margin-bottom:8px;page-break-inside:avoid;"><div style="font-size:13px;color:#0A1F3C;line-height:1.55;">&ldquo;${escS(q.quote)}&rdquo;</div><div style="font-size:10.5px;color:#5B6B82;margin-top:6px;">${escS(q.source || 'Source document')}${q.date ? ` · ${escS(q.date)}` : ''}${q.who ? ` · ${escS(q.who)}` : ''}</div></div>`;
+  const relLabel = r => r === 3 ? 'Stated need' : r === 2 ? 'Priority' : r === 1 ? 'Context' : r === 0 ? 'Noise' : '';
+  const relColor = r => r === 3 ? '#0A7D68' : r === 2 ? '#B4700F' : '#8A97AB';
+  const timelineRow = (e) => `<tr><td style="padding:6px 10px;border-top:1px solid #E9EDF3;font-size:11px;color:#5B6B82;white-space:nowrap;">${escS(e.date || '')}</td><td style="padding:6px 10px;border-top:1px solid #E9EDF3;font-size:11px;color:#42526B;white-space:nowrap;">${escS(e.type || '')}</td><td style="padding:6px 10px;border-top:1px solid #E9EDF3;font-size:11px;color:#0A1F3C;">${escS(String(e.title || '').slice(0, 110))}</td><td style="padding:6px 10px;border-top:1px solid #E9EDF3;font-size:10px;font-weight:700;color:${relColor(e.relevance)};white-space:nowrap;">${relLabel(e.relevance)}</td></tr>`;
+  const confColors = { strong: 'background:#E5F5F2;color:#0A7D68;', thin: 'background:#FDF6E8;color:#B4700F;', do_not_send: 'background:#FDF0EC;color:#C0472E;' };
+  const confLabel = { strong: 'Evidence: strong', thin: 'Evidence: thin', do_not_send: 'Do not send' };
+  const confBadge = doc.confidence ? `<span title="${escS(doc.confidence_reason || '')}" style="display:inline-block;margin-left:8px;font-size:9px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;padding:3px 9px;border-radius:999px;${confColors[doc.confidence] || confColors.thin}">${confLabel[doc.confidence] || ''}</span>` : '';
+  const motionLine = doc.motion && doc.motion !== 'Unclear' ? `<div style="font-size:11px;color:#0A7D68;margin-top:4px;"><b>Motion: ${escS(doc.motion)}.</b> ${doc.motion_reason || ''}</div>` : '';
   const body = `
     <div class="dossier-page" style="background:#fff;overflow:hidden;">
       <div style="background:#0A1F3C;padding:22px 30px;display:flex;justify-content:space-between;align-items:center;">
@@ -356,8 +387,9 @@ function serverDossierHtml(d) {
       </div>
       <div style="padding:20px 30px 6px;display:flex;gap:16px;align-items:center;">
         <div style="width:54px;height:54px;border:1px solid #E3E8F0;border-radius:12px;display:grid;place-items:center;font:700 18px Inter,sans-serif;color:#12305B;flex:none;">${initials}</div>
-        <div><div style="font:700 26px Inter,sans-serif;color:#0A1F3C;">${escS(d.school_name)}</div><div style="font-size:12px;color:#5B6B82;margin-top:2px;">${doc.context_line || ''}</div></div>
+        <div><div style="font:700 26px Inter,sans-serif;color:#0A1F3C;">${escS(d.school_name)}${confBadge}</div><div style="font-size:12px;color:#5B6B82;margin-top:2px;">${doc.context_line || ''}</div>${motionLine}</div>
       </div>
+      ${(doc.what_they_said || []).length ? `<div style="padding:4px 30px 0;">${secTitle('What they said')}${(doc.what_they_said || []).slice(0, 3).map(said).join('')}</div>` : ''}
       <div style="margin:16px 30px;background:${bannerBg[theme]};border:1px solid ${themeColors[theme]}33;border-radius:12px;padding:14px 18px;display:flex;gap:14px;align-items:flex-start;">
         <span style="background:${themeColors[theme]};color:#fff;font:700 9px Inter,sans-serif;letter-spacing:.1em;border-radius:999px;padding:4px 12px;white-space:nowrap;flex:none;margin-top:2px;">${escS((doc.banner_label || 'WHY IT MATTERS').toUpperCase())}</span>
         <div style="font-size:12px;color:#42526B;line-height:1.55;">${doc.banner_text || ''}</div>
@@ -368,23 +400,24 @@ function serverDossierHtml(d) {
           <div style="font:700 10px Inter,sans-serif;letter-spacing:.12em;color:#0A7D68;margin-bottom:8px;">THREE THINGS THAT DECIDE THIS ACCOUNT</div>
           <ol style="margin:0;padding-left:18px;font-size:12px;color:#42526B;line-height:1.55;">${(doc.tldr || []).map(t => `<li style="margin-bottom:6px;">${t}</li>`).join('')}</ol>
         </div>
-        ${secTitle('The numbers')}
-        <div style="display:flex;gap:10px;flex-wrap:wrap;">${(doc.stats || []).map(stat).join('')}</div>
+        ${(doc.stats || []).length ? `${secTitle('The numbers')}<div style="display:flex;gap:10px;flex-wrap:wrap;">${(doc.stats || []).map(stat).join('')}</div>` : ''}
+        ${(doc.evidence_timeline || []).length ? `${secTitle('Signal timeline')}<table style="width:100%;border-collapse:collapse;border:1px solid #E3E8F0;border-radius:10px;overflow:hidden;page-break-inside:avoid;"><thead><tr style="background:#0A1F3C;color:#fff;font:700 10px Inter,sans-serif;letter-spacing:.1em;"><td style="padding:7px 10px;">DATE</td><td style="padding:7px 10px;">TYPE</td><td style="padding:7px 10px;">SIGNAL</td><td style="padding:7px 10px;">READ</td></tr></thead><tbody>${(doc.evidence_timeline || []).map(timelineRow).join('')}</tbody></table>` : ''}
         ${secTitle('Tech stack & what matters')}
         <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;">
-          <div style="border:1px solid #E3E8F0;border-radius:10px;overflow:hidden;"><div style="background:#0A1F3C;color:#fff;font:700 10px Inter,sans-serif;letter-spacing:.1em;padding:8px 12px;">SYSTEMS ON FILE</div>${(doc.stack || []).map(stackRow).join('')}</div>
+          <div style="border:1px solid #E3E8F0;border-radius:10px;overflow:hidden;"><div style="background:#0A1F3C;color:#fff;font:700 10px Inter,sans-serif;letter-spacing:.1em;padding:8px 12px;">SYSTEMS ON FILE</div>${(doc.stack || []).length ? (doc.stack || []).map(stackRow).join('') : '<div style="padding:10px 12px;font-size:11.5px;color:#5B6B82;">Not on file. Ask on the first call.</div>'}</div>
           <div style="font-size:12px;color:#42526B;line-height:1.55;">${doc.stack_matters || ''}</div>
         </div>
         ${secTitle('Who is on file')}
         ${(doc.people || []).length ? (doc.people || []).map(person).join('') : '<div style="font-size:12px;color:#5B6B82;">No contacts on file in HubSpot. Candidly, sourcing an enrollment or registrar contact is step one.</div>'}
       </div>
-      <div style="background:#0A1F3C;margin-top:18px;padding:16px 30px 20px;">
+    </div>
+    <div class="dossier-page" style="background:#fff;overflow:hidden;padding:0 0 22px;">
+      <div style="background:#0A1F3C;padding:16px 30px 20px;">
         <div style="font:700 10px Inter,sans-serif;letter-spacing:.14em;color:#15B4A6;margin-bottom:8px;">HOW THIS DOSSIER WAS ASSEMBLED</div>
         <div>${(doc.provenance_chips || []).map(chip).join('')}</div>
         <div style="font-size:11px;color:rgba(255,255,255,.85);line-height:1.55;margin-top:8px;">${doc.provenance_point || ''}</div>
       </div>
-    </div>
-    <div class="dossier-page" style="background:#fff;overflow:hidden;padding:8px 30px 22px;">
+      <div style="padding:8px 30px 0;">
       ${secTitle('Why they would want DegreeSight')}
       <ul style="list-style:none;margin:0;padding:0;">${(doc.fit || []).map(f => `<li style="display:flex;gap:10px;font-size:12px;color:#42526B;line-height:1.55;margin-bottom:8px;"><span style="width:8px;height:8px;border-radius:50%;background:#15B4A6;flex:none;margin-top:5px;"></span><span>${f}</span></li>`).join('')}</ul>
       ${secTitle('Watch for')}
@@ -398,6 +431,7 @@ function serverDossierHtml(d) {
       <div style="display:flex;justify-content:space-between;border-top:1px solid #E9EDF3;margin-top:16px;padding-top:10px;font-size:10px;color:#5B6B82;">
         <span>${doc.sources_footer || 'Sources: Starbridge, HubSpot.'}</span>
         <span><b style="color:#0A1F3C;">DegreeSight</b> · Auto-generated weekly</span>
+      </div>
       </div>
     </div>`;
   return `<!DOCTYPE html><html><head><meta charset="utf-8">
@@ -478,6 +512,19 @@ function slackChunks(header, lines, footer, maxLen = 3200) {
   return chunks;
 }
 
+// One channel row per dossier: school (ST) | score | what they said | bridge | rep | link.
+// The quote comes from the dossier's own evidence section; the Claude hook is
+// the fallback. Cuts happen on a word boundary, never mid-sentence.
+function cutWords(t, n) { const w = String(t || '').replace(/<[^>]+>/g, '').replace(/\s+/g, ' ').trim(); return w.length <= n ? w : w.slice(0, n).replace(/\s+\S*$/, '') + '…'; }
+function slackDossierLine(r6, i, hooks, score5, stateOf, repMention, assignedRep) {
+  const st = stateOf(r6.d);
+  const said = (r6.d.dossier?.what_they_said || [])[0];
+  const quote = said?.quote ? `“${cutWords(said.quote, 170)}”${said.date ? ` (${said.date})` : ''}` : cutWords((hooks || {})[r6.d.school_name] || r6.d.dossier?.banner_text || '', 170);
+  const bridge = r6.t.top_signal?.bridge || r6.t.top_signal?.type || 'signals';
+  const link = r6.p ? `<${r6.p.url}|Dossier>` : 'PDF pending';
+  return `${i + 1}. ${slackEsc(r6.d.school_name)}${st ? ` (${st})` : ''} | ${score5(r6.t)}/5 | ${slackEsc(quote)} | ${slackEsc(bridge)} | ${repMention(assignedRep(r6.d))} | ${link}`;
+}
+
 async function slackDmByEmail(email, text) {
   const testEmail = process.env.SLACK_TEST_EMAIL;
   const target = testEmail || email;
@@ -510,57 +557,149 @@ const STATE_TO_REP = {
   CA: 'Drew Melendres', AK: 'Drew Melendres', HI: 'Drew Melendres'
 };
 
-// Full dossier generation (Starbridge + HubSpot + Claude). Shared by the
-// interactive ?action=dossier route and the automatic weekly cron.
-async function generateDossier(buyerId, buyerName, selection = null) {
-  const hsToken = process.env.HUBSPOT_TOKEN;
-  // Resolve the REAL institution name from the buyer record — signal feeds
-  // often carry meeting/contract titles instead of the school name.
-  let resolvedName = buyerName;
+// Resolve the REAL institution behind a buyerId. Signal feeds hand us meeting
+// titles and expense descriptions ("Travel Agency Service Fee ... at University
+// Of Wisconsin Milwaukee from AGENT FEE ..."), and a dossier titled after an
+// invoice is useless. Order: Starbridge Name attribute -> Starbridge buyer
+// search on the name candidates (must return the same buyerId) -> best
+// candidate parsed from the title -> the raw title as a last resort.
+function looksLikeInstitution(n) {
+  return /\b(university|college|institute|school|district|system|academy|seminary|conservatory|cuny|suny)\b/i.test(String(n || ''));
+}
+async function resolveInstitutionName(buyerId, rawName) {
+  const raw = String(rawName || '').replace(/\s+/g, ' ').trim();
+  const result = { name: raw, via: 'signal_title' };
   try {
     const nameAttr = await getBuyerAttribute(buyerId, 'Name');
     const n = nameAttr?.buyerData;
-    if (typeof n === 'string' && n.trim().length > 2) resolvedName = n.trim();
+    if (typeof n === 'string' && n.trim().length > 2) return { name: n.trim(), via: 'starbridge_attribute' };
   } catch {}
-  buyerName = resolvedName;
+  const candidates = companyNameCandidates(raw).filter(looksLikeInstitution);
+  for (const c of candidates.slice(0, 3)) {
+    try {
+      const sr = await searchBuyers(c, { limit: 5 });
+      const list = Array.isArray(sr) ? sr : (sr?.result || sr?.results || sr?.buyers || []);
+      const hit = list.find(b => String(b.id || b.buyerId) === String(buyerId));
+      const hitName = hit && (hit.name || hit.buyerName);
+      if (hitName) return { name: String(hitName).trim(), via: `starbridge_search (${c})` };
+    } catch {}
+  }
+  if (candidates.length) return { name: candidates[0], via: 'parsed_from_title' };
+  return result;
+}
+
+// Evidence rows for the writer and the PDF timeline: one compact record per
+// signal, with whatever free text Starbridge attached (summary, match
+// reasoning, description). Built from data, never from the model.
+const DATE_KEYS = ['date', 'postedDate', 'posted_at', 'publishedAt', 'signalDate', 'createdAt', 'updatedAt'];
+function pickDate(row) {
+  for (const k of DATE_KEYS) { const v = row?.[k]; if (typeof v === 'string' && v.length >= 8) return v.slice(0, 10); }
+  return null;
+}
+function pickText(row) {
+  const skip = /(^|_)(id|url|uri|href|logo|image|slug|name|title|buyerName|type|status)s?$/i;
+  let best = '';
+  for (const [k, v] of Object.entries(row || {})) {
+    if (skip.test(k)) continue;
+    if (typeof v === 'string' && v.length > best.length) best = v;
+  }
+  return best ? best.replace(/\s+/g, ' ').trim().slice(0, 700) : '';
+}
+function pickScore(row) {
+  for (const k of ['matchScore', 'match_score', 'score', 'relevanceScore', 'hotness']) {
+    const v = row?.[k]; if (typeof v === 'number') return v; if (typeof v === 'string' && /^\d+(\.\d+)?$/.test(v)) return Number(v);
+  }
+  return null;
+}
+function buildEvidence(signalRows, gradedSignals) {
+  const graded = Array.isArray(gradedSignals) ? gradedSignals : [];
+  const rows = (Array.isArray(signalRows) ? signalRows : []).slice(0, 12);
+  const out = rows.map(s => {
+    const row = s.row || s;
+    const title = row?.name || s.name || null;
+    const g = graded.find(x => x.name && title && x.name === title);
+    return {
+      date: pickDate(row),
+      type: s.bridge?.filterType || s.type || row?.type || null,
+      bridge: s.bridge?.name || s.bridge || null,
+      title,
+      text: pickText(row) || null,
+      starbridge_score: pickScore(row),
+      relevance: g ? g.relevance : null,
+      noise: g ? g.noise : null
+    };
+  });
+  out.sort((a, b) => (b.relevance ?? -1) - (a.relevance ?? -1) || String(b.date || '').localeCompare(String(a.date || '')));
+  return out;
+}
+
+// Full dossier generation (Starbridge + HubSpot + Claude). Shared by the
+// interactive ?action=dossier route and the automatic weekly cron.
+// `selection` carries the weekly triage verdict for this account
+// ({ why_selected, graded_signals }) when called from the cron.
+async function generateDossier(buyerId, buyerName, selection = null) {
+  const hsToken = process.env.HUBSPOT_TOKEN;
+  const resolved = await resolveInstitutionName(buyerId, buyerName);
+  buyerName = resolved.name;
 
   const [summaryRes, signalsRes, attributesRes, hubspotRes] = await Promise.allSettled([
     getBuyerSummary(buyerId),
     listRecentBuyerSignals(buyerId, { pageSize: 15 }),
     getBuyerAttributes(buyerId),
-    hsToken && buyerName ? fetchHubSpotCompanyData(hsToken, buyerName) : Promise.resolve(null)
+    hsToken && buyerName && looksLikeInstitution(buyerName) ? fetchHubSpotCompanyData(hsToken, buyerName) : Promise.resolve(null)
   ]);
   const summary = summaryRes.status === 'fulfilled' ? summaryRes.value : null;
-  const signals = signalsRes.status === 'fulfilled' ? signalsRes.value : [];
+  const signalsRaw = signalsRes.status === 'fulfilled' ? signalsRes.value : [];
+  const signals = Array.isArray(signalsRaw) ? signalsRaw : (signalsRaw?.result || []);
   const attributes = attributesRes.status === 'fulfilled' ? attributesRes.value : {};
   const hubspot = hubspotRes.status === 'fulfilled' ? hubspotRes.value : null;
   const skip = hubspot && hubspot.deal_state === 'closed_won';
+  const evidence = buildEvidence(signals, selection?.graded_signals);
+  // Attributes that actually have a value. The writer may only quote these.
+  const facts = Object.fromEntries(Object.entries(attributes || {}).filter(([, v]) => v != null && v !== '' && !(Array.isArray(v) && !v.length)));
+
   const claudePayload = {
     school_name: buyerName,
+    name_resolution: resolved.via,
     starbridge_summary: summary,
-    starbridge_attributes: attributes,
-    recent_signals: (Array.isArray(signals) ? signals : (signals?.result || [])).slice(0, 10),
+    starbridge_attributes_on_file: facts,
     // Why the weekly triage picked this account (what the institution said about transfer).
-    // Lead the banner and TL;DR with this when present.
-    selection: selection || null,
+    selection: selection ? { why_selected: selection.why_selected || null } : null,
+    evidence,
     hubspot: hubspot ? {
       company: hubspot.company,
       owner: hubspot.owner_name,
       destination_owner: hubspot.destination_owner,
       deal_state: hubspot.deal_state,
       contacts: hubspot.contacts.slice(0, 10),
-      deals: hubspot.deals.map(d => ({ name: d.dealname, stage: d.dealstage, amount: d.amount }))
+      deals: hubspot.deals.map(d => ({ name: d.dealname, stage: d.dealstage, amount: d.amount, close: d.closedate })),
+      history: hubspot.history || null
     } : null
   };
-  let dossier = null, claude_error = null;
-  try { dossier = await claudeDossier(claudePayload); }
+  let dossier = null, claude_error = null, verification = null;
+  try {
+    dossier = await claudeDossier(claudePayload);
+    try { verification = await verifyDossier(claudePayload, dossier); dossier = verification.dossier; }
+    catch (e) { verification = { error: e.message }; }
+  }
   catch (e) { claude_error = e.message; }
+
+  // Provenance is generated from what we actually used, not written by the model.
+  if (dossier) {
+    const chips = [];
+    chips.push({ src: 'Starbridge', detail: `${evidence.length} signal${evidence.length === 1 ? '' : 's'}${summary ? ', buyer summary' : ''}` });
+    if (Object.keys(facts).length) chips.push({ src: 'Starbridge', detail: `${Object.keys(facts).length} attributes on file` });
+    if (hubspot?.company) chips.push({ src: 'HubSpot', detail: `${hubspot.contacts.length} contact${hubspot.contacts.length === 1 ? '' : 's'}, ${hubspot.deals.length} deal${hubspot.deals.length === 1 ? '' : 's'}` });
+    else chips.push({ src: 'HubSpot', detail: 'no company match' });
+    dossier.provenance_chips = chips;
+    dossier.sources_footer = `Sources: Starbridge${hubspot?.company ? ', HubSpot' : ''}. Figures are Starbridge/IPEDS-derived where present; confirm in conversation.`;
+    dossier.evidence_timeline = evidence.slice(0, 8).map(e => ({ date: e.date, type: e.type, title: e.title, relevance: e.relevance }));
+    if (!['strong', 'thin', 'do_not_send'].includes(dossier.confidence)) dossier.confidence = 'thin';
+  }
 
   // Ownership: HubSpot routing first; if the school has NO owner in HubSpot,
   // fall back to the sales territory map by state. State cascade:
-  // Starbridge StateCode -> Claude-inferred state -> state at end of context_line.
-  // HubSpot's company state comes BEFORE the AI-inferred one: it is ground
-  // truth and it keeps working when the Claude call fails (e.g. no credits).
+  // Starbridge StateCode -> HubSpot company state -> Claude-inferred state -> state at end of context_line.
   const stateCode =
     String(attributes?.StateCode || '').toUpperCase().trim() ||
     normalizeState(hubspot?.company?.state) ||
@@ -572,8 +711,11 @@ async function generateDossier(buyerId, buyerName, selection = null) {
   return {
     buyerId,
     school_name: buyerName,
-    skip_recommended: skip,
-    skip_reason: hubspot?.skip_reason || null,
+    name_resolved_via: resolved.via,
+    skip_recommended: skip || dossier?.confidence === 'do_not_send',
+    skip_reason: hubspot?.skip_reason || (dossier?.confidence === 'do_not_send' ? (dossier?.confidence_reason || 'Writer judged the evidence too weak to send') : null),
+    confidence: dossier?.confidence || null,
+    confidence_reason: dossier?.confidence_reason || null,
     prepared_for: preparedFor,
     state_used: stateCode || null,
     _assigned_via: hubspot?.destination_owner ? 'hubspot' : (territoryRep ? `territory (${stateCode})` : null),
@@ -585,10 +727,11 @@ async function generateDossier(buyerId, buyerName, selection = null) {
     compiled_date: new Date().toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' }),
     dossier,
     claude_error,
+    _verification: verification ? { dropped: verification.dropped || [], notes: verification.notes || null, error: verification.error || null } : null,
     _sources: {
       starbridge_summary: !!summary,
-      starbridge_attributes: Object.keys(attributes || {}).length > 0,
-      signals_count: (Array.isArray(signals) ? signals : (signals?.result || [])).length,
+      starbridge_attributes: Object.keys(facts).length,
+      signals_count: signals.length,
       hubspot_company: !!hubspot?.company,
       hubspot_error: hubspot?._error || null
     }
@@ -596,55 +739,109 @@ async function generateDossier(buyerId, buyerName, selection = null) {
 }
 
 // Claude synthesis — builds the dossier copy JSON following the writing rules.
-async function claudeDossier(payload) {
+// Writer runs on Sonnet (ten dossiers a week, long minutes to read); triage,
+// hooks and verification stay on Haiku.
+const DOSSIER_WRITER_MODEL = process.env.DOSSIER_WRITER_MODEL || 'claude-sonnet-4-5';
+async function claudeJson(model, prompt, maxTokens) {
   const apiKey = process.env.ANTHROPIC_API_KEY;
   if (!apiKey) throw new Error('ANTHROPIC_API_KEY not set');
-  const prompt = `You are writing a DegreeSight account dossier. DegreeSight sells AI-powered transfer credit evaluation and degree-audit for higher ed (two motions: Inbound student-facing transferability check; Insight registrar-grade automated credit evaluation). Partner references: Indiana Wesleyan, Cumberlands, Youngstown State, Roosevelt University.
-
-WRITING RULES (hard):
-- Concise, direct, plain language. NO em dashes anywhere. No corporate filler.
-- Use "candidly" rather than "honestly".
-- Be honest about gaps and risk. Flag hard budgets and unclear ownership.
-- Inline <b>...</b> tags allowed for emphasis. Word limits below are strict.
-- If DATA.selection is present, the banner and first TL;DR item must lead with what the institution itself said about transfer (DATA.selection.why_selected). Competitor conference attendance, travel, lodging or a competitor contract is context for the watch list, never evidence of buying intent. Do not write that a school is "evaluating platforms" or "signals interest" unless the signal text says so.
-
-DATA:
-${JSON.stringify(payload, null, 2)}
-
-Return VALID JSON only:
-{
-  "theme": "hot" | "warm" | "neutral",
-  "tag": "Signal-Driven" | "Inbound" | "Account Review",
-  "context_line": "≤12 words: target type · institution type · City, ST",
-  "state": "two-letter US state code of the institution. If not present in DATA, infer it from your own knowledge (e.g. resolve acronyms like VVC = Victor Valley College, CA). null ONLY if truly unknown.",
-  "banner_label": "Why it's hot" | "Why it matters",
-  "banner_text": "≤60 words. Lead with how it surfaced and why now. <b> allowed.",
-  "tldr": ["3 items, each ≤35 words, start with <b>bolded takeaway.</b>"],
-  "stats": [{"n": "value", "l": "≤8 word label", "warn": false}, "... exactly 4"],
-  "stack": [{"label": "System category", "value": "Product name", "ok": true}, "... up to 4; ok=true when it is in DegreeSight connector set (Banner, Colleague, PeopleSoft, Workday, Slate, TargetX, Salesforce, DegreeWorks, uAchieve, Canvas, D2L, Blackboard, Moodle)"],
-  "stack_matters": "≤55 words starting with <b>Why it matters:</b>",
-  "people": [{"name": "", "badge": "Best entry|Verify title|Champion", "badge_type": "owner|stale|neutral", "role": "", "note": "≤25 words", "contact": "email"}, "... up to 2, ONLY from real HubSpot contacts provided"],
-  "provenance_chips": [{"src": "Starbridge", "detail": "≤6 words"}, {"src": "HubSpot", "detail": "≤6 words"}],
-  "provenance_point": "≤45 words starting with <b>The point of the integration:</b>",
-  "fit": ["3 items ≤35 words each, start with <b>bold claim.</b> Why they would want DegreeSight."],
-  "watch": ["3-4 items ≤30 words each, start with <b>Bolded risk.</b> Budget, ownership, timing, competitors."],
-  "bring": ["3 items ≤25 words each, start with <b>Bolded item.</b> What to bring to the first call."],
-  "pull_highlight": "2-4 word teal phrase",
-  "pull_body": "≤55 words closing strategic framing",
-  "sources_footer": "Sources: Starbridge, HubSpot. Figures Starbridge/IPEDS-derived; confirm in conversation."
-}`;
   const r = await fetch('https://api.anthropic.com/v1/messages', {
     method: 'POST',
     headers: { 'x-api-key': apiKey, 'anthropic-version': '2023-06-01', 'content-type': 'application/json' },
-    body: JSON.stringify({ model: 'claude-haiku-4-5', max_tokens: 3000, messages: [{ role: 'user', content: prompt }] })
+    body: JSON.stringify({ model, max_tokens: maxTokens, messages: [{ role: 'user', content: prompt }] })
   });
   if (!r.ok) throw new Error(`Claude ${r.status}: ${(await r.text()).slice(0, 200)}`);
   const j = await r.json();
   const txt = (j.content?.[0]?.text || '').replace(/^```(?:json)?\s*/gim, '').replace(/\s*```\s*$/gim, '');
   const s = txt.indexOf('{'), e2 = txt.lastIndexOf('}');
   if (s < 0 || e2 <= s) throw new Error('Claude did not return JSON');
-  let jsonStr = txt.slice(s, e2 + 1).replace(/,(\s*[\}\]])/g, '$1');
-  return JSON.parse(jsonStr);
+  return JSON.parse(txt.slice(s, e2 + 1).replace(/,(\s*[\}\]])/g, '$1'));
+}
+
+async function claudeDossier(payload) {
+  const prompt = `You are writing a DegreeSight account dossier for a sales rep. DegreeSight sells AI-powered transfer credit evaluation and degree audit to higher ed. Two motions: INBOUND (student-facing transferability check that helps a school recruit and enroll more transfer students) and INSIGHT (registrar-grade automated credit evaluation that cuts evaluation turnaround and advisor load). Partner references: Indiana Wesleyan (private, online-heavy), University of the Cumberlands (private, large online), Youngstown State (public regional, Banner), Roosevelt University (private urban).
+
+WHAT GOOD LOOKS LIKE
+The rep should be able to open a call with what the institution itself said about transfer. The dossier is evidence first, interpretation second. A short, honest dossier beats a full one padded with guesses.
+
+GROUNDING RULES (hard)
+- Every number in "stats" must come from DATA.starbridge_attributes_on_file or DATA.hubspot. If fewer than 4 real numbers exist, return fewer stats; never estimate, never write "~" or "likely". A missing number is not a stat.
+- "stack" rows only when a source in DATA names the system (Sis, LmsArray, HubSpot fields, or signal text). Otherwise return an empty array and say in stack_matters that the stack is not on file.
+- "what_they_said" quotes come ONLY from DATA.evidence[].text, DATA.selection.why_selected or DATA.starbridge_summary. Keep the institution's wording; shorten, do not embellish. Each item names its source document and date.
+- Competitor conference attendance, travel, lodging, registration fees, agency fees and competitor renewals are context for "watch", never evidence of buying intent. Never write that a school is "evaluating platforms", "signals interest" or "exploring" unless the evidence text says so.
+- "people" only from DATA.hubspot.contacts. If none, return an empty array.
+- Use DATA.hubspot.history. If we have notes or meetings with this school, say so in tldr and bring; do not call the account cold or suggest creating a deal when one exists.
+- Every item in tldr, fit, watch and bring ends with a source tag in square brackets: [minutes], [Starbridge], [HubSpot], [attributes] or [inference]. Items tagged [inference] are allowed but keep them to at most one per section.
+
+CONFIDENCE (you decide, we enforce)
+- "strong": at least one evidence item where the institution states a transfer need or committed step, and the institution is clearly identified.
+- "thin": institution identified, but the evidence is a priority mention without action, or thin attributes.
+- "do_not_send": the institution cannot be identified, OR the only evidence is expense/travel/competitor-event lines, OR you would have to invent most of the dossier. Say why in confidence_reason. This is the right answer more often than you think; use it.
+
+WRITING RULES (hard)
+- Concise, direct, plain language. NO em dashes anywhere. No corporate filler.
+- Use "candidly" rather than "honestly".
+- Inline <b>...</b> tags allowed for emphasis. Word limits below are strict.
+
+DATA:
+${JSON.stringify(payload, null, 2)}
+
+Return VALID JSON only:
+{
+  "confidence": "strong" | "thin" | "do_not_send",
+  "confidence_reason": "≤30 words",
+  "theme": "hot" | "warm" | "neutral",
+  "tag": "Signal-Driven" | "Inbound" | "Account Review",
+  "motion": "Inbound" | "Insight" | "Both" | "Unclear",
+  "motion_reason": "≤30 words: which stated problem maps to which motion. [source tag]",
+  "context_line": "≤12 words: institution type · control · City, ST",
+  "state": "two-letter US state code of the institution. If not present in DATA, infer it from your own knowledge. null ONLY if truly unknown.",
+  "what_they_said": [{"quote": "≤45 words, the institution's own words or a tight paraphrase", "source": "document title", "date": "YYYY-MM-DD or null", "who": "role or body if stated, else null"}, "... 1 to 3 items, strongest first; empty array if there is no institutional statement in the evidence"],
+  "banner_label": "Why it's hot" | "Why it matters",
+  "banner_text": "≤60 words. Lead with what they said and when. <b> allowed.",
+  "tldr": ["3 items, each ≤35 words, start with <b>bolded takeaway.</b>, end with [source tag]"],
+  "stats": [{"n": "value", "l": "≤8 word label", "warn": false, "source": "attribute or HubSpot field name"}, "... 0 to 4, real values only"],
+  "stack": [{"label": "System category", "value": "Product name", "ok": true, "source": "where it came from"}, "... 0 to 4; ok=true when it is in DegreeSight connector set (Banner, Colleague, PeopleSoft, Workday, Slate, TargetX, Salesforce, DegreeWorks, uAchieve, Canvas, D2L, Blackboard, Moodle)"],
+  "stack_matters": "≤55 words starting with <b>Why it matters:</b>",
+  "people": [{"name": "", "badge": "Best entry|Verify title|Champion", "badge_type": "owner|stale|neutral", "role": "", "note": "≤25 words", "contact": "email"}, "... up to 2, ONLY from DATA.hubspot.contacts"],
+  "provenance_point": "≤45 words starting with <b>The point of the integration:</b>",
+  "fit": ["3 items ≤35 words each, start with <b>bold claim.</b> Tie each to a stated problem and to Inbound or Insight. Name ONE partner reference where the type matches and say why. End with [source tag]."],
+  "watch": ["2-4 items ≤30 words each, start with <b>Bolded risk.</b> Budget, ownership, timing, competitors. End with [source tag]."],
+  "bring": ["3 items ≤25 words each, start with <b>Bolded item.</b> What to bring to the first call. End with [source tag]."],
+  "pull_highlight": "2-4 word teal phrase",
+  "pull_body": "≤55 words closing strategic framing, grounded in what they said"
+}`;
+  return claudeJson(DOSSIER_WRITER_MODEL, prompt, 4000);
+}
+
+// Second pass: a cheap model checks every claim against the input and drops
+// what the data does not support. Returns the cleaned dossier plus a list of
+// what was removed, which goes into the bundle for review.
+async function verifyDossier(payload, dossier) {
+  const prompt = `You are a fact checker for a sales dossier. Compare the DOSSIER against the DATA it was written from.
+
+Remove or fix:
+- any "stats" item whose value does not appear in DATA (numbers, system names, years). Drop it; do not replace it.
+- any "stack" row naming a system that no field or signal text in DATA names.
+- any "what_they_said" quote that is not supported by DATA.evidence[].text, DATA.selection.why_selected or DATA.starbridge_summary.
+- any "people" entry not in DATA.hubspot.contacts.
+- any sentence in tldr, fit, watch, bring, banner_text or pull_body that claims the institution is evaluating, exploring, shopping for or interested in a platform when no DATA text says so. Rewrite that sentence to what the data supports, or drop the item.
+- "confidence": downgrade to "do_not_send" if, after your removals, what_they_said is empty AND stats is empty, or the school name is not an institution. Downgrade "strong" to "thin" if what_they_said is empty. Never upgrade.
+
+Keep everything else exactly as written, including <b> tags and [source tags]. No em dashes.
+
+DATA:
+${JSON.stringify(payload, null, 2)}
+
+DOSSIER:
+${JSON.stringify(dossier, null, 2)}
+
+Return VALID JSON only: {"dossier": <the corrected dossier object, same shape>, "dropped": ["≤15 words per removed or rewritten item, naming the field"], "notes": "≤40 words or null"}`;
+  const out = await claudeJson('claude-haiku-4-5', prompt, 6000);
+  if (!out.dossier || typeof out.dossier !== 'object') throw new Error('verifier returned no dossier');
+  // Preserve fields the verifier is not responsible for
+  for (const k of ['state', 'theme', 'tag']) if (out.dossier[k] == null && dossier[k] != null) out.dossier[k] = dossier[k];
+  return { dossier: out.dossier, dropped: Array.isArray(out.dropped) ? out.dropped : [], notes: out.notes || null };
 }
 
 // ---------- Weekly plan triage (Claude reads the signals before we rank) ----------
@@ -804,7 +1001,16 @@ export default async function handler(req, res) {
       const buyerId = url.searchParams.get('buyerId');
       const buyerName = url.searchParams.get('buyerName') || '';
       if (!buyerId) return res.status(400).json({ error: 'buyerId required' });
-      return res.status(200).json(await generateDossier(buyerId, buyerName));
+      const d = await generateDossier(buyerId, buyerName);
+      // &pdf=1 returns the rendered PDF (same renderer as the weekly cron) so a
+      // dossier can be reviewed without posting anything.
+      if (url.searchParams.get('pdf') === '1') {
+        const pdf = await renderPdfBuffer(serverDossierHtml(d));
+        res.setHeader('Content-Type', 'application/pdf');
+        res.setHeader('Content-Disposition', `inline; filename="${String(d.school_name || 'dossier').replace(/[^A-Za-z0-9 _-]/g, '')}.pdf"`);
+        return res.status(200).send(pdf);
+      }
+      return res.status(200).json(d);
     }
 
     // ===== LEAD DOSSIER: resolve a HubSpot company name → Starbridge buyer → dossier =====
@@ -1213,7 +1419,12 @@ Return VALID JSON only:
               d._signal_count = t.signal_count; d._intent_score = t.intent_score; d._strong_signals = t.strong_signals;
               d._max_relevance = t.max_relevance; d._triage_reason = t.triage_reason || null;
               state.dossiers.push(d);
-              try {
+              // The writer can refuse: a "do_not_send" dossier is kept in the
+              // bundle for review but gets no PDF and no Slack row.
+              if (d.confidence === 'do_not_send') {
+                state.not_sent = state.not_sent || [];
+                state.not_sent.push({ school: d.school_name, reason: d.confidence_reason || d.skip_reason || 'weak evidence' });
+              } else try {
                 const pdf = await renderPdfBuffer(serverDossierHtml(d));
                 const up = await blobPut(`weekly/${state.week}/pdf/${safeName(d.school_name)}.pdf`, pdf, 'application/pdf');
                 state.pdfs.push({ school: d.school_name, url: up.url, prepared_for: d.prepared_for || null });
@@ -1232,8 +1443,9 @@ Return VALID JSON only:
             // One-line hooks for the channel message (single Claude call)
             try {
               const apiKey = process.env.ANTHROPIC_API_KEY;
-              const items = state.dossiers.map(d3 => ({
+              const items = state.dossiers.filter(d3 => d3.confidence !== 'do_not_send').map(d3 => ({
                 school: d3.school_name,
+                what_they_said: (d3.dossier?.what_they_said || []).slice(0, 2),
                 banner: (d3.dossier?.banner_text || '').replace(/<[^>]+>/g, ''),
                 top_signal: (state.targets.find(t3 => t3.buyerId === d3.buyerId) || {}).top_signal || null,
                 why_selected: (state.targets.find(t3 => t3.buyerId === d3.buyerId) || {}).triage_reason || null
@@ -1252,7 +1464,7 @@ Return VALID JSON only: {"hooks": {"<school>": "<hook>"}}`;
 
             const bundle = {
               week: state.week, targets: state.targets, dossiers: state.dossiers, digests: state.digests,
-              pdfs: state.pdfs, hooks: state.hooks, skipped_recent: state.skipped_recent, dropped_low: state.dropped_low || [], triage_error: state.triage_error || null, rfp_count: state.rfp_count,
+              pdfs: state.pdfs, hooks: state.hooks, skipped_recent: state.skipped_recent, dropped_low: state.dropped_low || [], not_sent: state.not_sent || [], triage_error: state.triage_error || null, rfp_count: state.rfp_count,
               saved_at: new Date().toISOString(), saved_by: 'weekly-cron', folder_url: DRIVE_FOLDER_LINK
             };
             await blobPut(`weekly/${state.week}/bundle.json`, Buffer.from(JSON.stringify(bundle)), 'application/json');
@@ -1286,16 +1498,12 @@ Return VALID JSON only: {"hooks": {"<school>": "<hook>"}}`;
             // Territory fallback at render time too (covers dossiers saved before the fix)
             const assignedRep = d3 => d3.prepared_for || STATE_TO_REP[stateOf(d3) || ''] || null;
             const rows2 = state.dossiers
+              .filter(d3 => d3.confidence !== 'do_not_send')
               .map(d3 => ({ d: d3, t: state.targets.find(t3 => t3.buyerId === d3.buyerId) || {}, p: (state.pdfs || []).find(p2 => p2.school === d3.school_name) }))
               .sort((a, b) => ((b.t.max_relevance || 0) - (a.t.max_relevance || 0)) || ((b.t.intent_score || 0) - (a.t.intent_score || 0)));
-            const lines = rows2.map((r6, i) => {
-              const st = stateOf(r6.d);
-              const hook = slackEsc((state.hooks || {})[r6.d.school_name] || String(r6.d.dossier?.banner_text || '').replace(/<[^>]+>/g, '').slice(0, 140));
-              const bridge = slackEsc(r6.t.top_signal?.bridge || r6.t.top_signal?.type || 'signals');
-              const link = r6.p ? `<${r6.p.url}|Dossier>` : 'PDF pending';
-              return `${i + 1}. ${slackEsc(r6.d.school_name)}${st ? ` (${st})` : ''} | ${score5(r6.t)}/5 | ${hook} | ${bridge} | ${repMention(assignedRep(r6.d))} | ${link}`;
-            });
+            const lines = rows2.map((r6, i) => slackDossierLine(r6, i, state.hooks, score5, stateOf, repMention, assignedRep));
             const notes = [];
+            if ((state.not_sent || []).length) notes.push(`Held back after review (evidence too weak to send): ${slackEsc(state.not_sent.map(n => `${n.school} (${n.reason})`).join('; '))}.`);
             if ((state.skipped_recent || []).length) notes.push(`${slackEsc(state.skipped_recent.join(', '))} re-surfaced but were dossiered within the last 90 days, so they were skipped.`);
             if (!state.rfp_count) notes.push('No new RFP/RFI signals came out of the bridges this week.');
             if ((state.dropped_low || []).length) notes.push(`Set aside as weak signals (competitor conference travel, expense lines, generic enrollment talk): ${slackEsc(state.dropped_low.slice(0, 8).join(', '))}${state.dropped_low.length > 8 ? ` and ${state.dropped_low.length - 8} more` : ''}.`);
@@ -1379,16 +1587,12 @@ Return VALID JSON only: {"hooks": {"<school>": "<hook>"}}`;
         // Territory fallback at render time too (covers dossiers saved before the fix)
         const assignedRep = d3 => d3.prepared_for || STATE_TO_REP[stateOf(d3) || ''] || null;
         const rows2 = (bundle.dossiers || [])
+          .filter(d3 => d3.confidence !== 'do_not_send')
           .map(d3 => ({ d: d3, t: (bundle.targets || []).find(t3 => t3.buyerId === d3.buyerId) || {}, p: (bundle.pdfs || []).find(p2 => p2.school === d3.school_name) }))
           .sort((a, b) => ((b.t.max_relevance || 0) - (a.t.max_relevance || 0)) || ((b.t.intent_score || 0) - (a.t.intent_score || 0)));
-        const lines = rows2.map((r6, i) => {
-          const st = stateOf(r6.d);
-          const hook = slackEsc((bundle.hooks || {})[r6.d.school_name] || String(r6.d.dossier?.banner_text || '').replace(/<[^>]+>/g, '').slice(0, 140));
-          const bridge = slackEsc(r6.t.top_signal?.bridge || r6.t.top_signal?.type || 'signals');
-          const link = r6.p ? `<${r6.p.url}|Dossier>` : 'PDF pending';
-          return `${i + 1}. ${slackEsc(r6.d.school_name)}${st ? ` (${st})` : ''} | ${score5(r6.t)}/5 | ${hook} | ${bridge} | ${repMention(assignedRep(r6.d))} | ${link}`;
-        });
+        const lines = rows2.map((r6, i) => slackDossierLine(r6, i, bundle.hooks, score5, stateOf, repMention, assignedRep));
         const notes = [];
+        if ((bundle.not_sent || []).length) notes.push(`Held back after review (evidence too weak to send): ${slackEsc(bundle.not_sent.map(n => `${n.school} (${n.reason})`).join('; '))}.`);
         if ((bundle.skipped_recent || []).length) notes.push(`${slackEsc(bundle.skipped_recent.join(', '))} re-surfaced but were dossiered within the last 90 days, so they were skipped.`);
         if (!bundle.rfp_count) notes.push('No new RFP/RFI signals came out of the bridges this week.');
         if ((bundle.dropped_low || []).length) notes.push(`Set aside as weak signals (competitor conference travel, expense lines, generic enrollment talk): ${slackEsc(bundle.dropped_low.slice(0, 8).join(', '))}${bundle.dropped_low.length > 8 ? ` and ${bundle.dropped_low.length - 8} more` : ''}.`);
