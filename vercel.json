@@ -6,6 +6,9 @@
     },
     "api/lead-scoring.js": {
       "maxDuration": 60
+    },
+    "api/starbridge.js": {
+      "maxDuration": 120
     }
   },
   "crons": [

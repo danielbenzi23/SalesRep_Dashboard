@@ -3494,7 +3494,7 @@
         <td><b>${escapeHtml(d.school_name || '?')}</b>${d.skip_recommended ? ' <span style="font-size:10px;color:#A32D2D;">(skip: closed-won)</span>' : ''}</td>
         <td><span style="color:${themeColor(d.dossier?.theme)};font-weight:700;font-size:11px;text-transform:uppercase;">${escapeHtml(d.dossier?.theme || '—')}</span></td>
         <td>${escapeHtml(d.prepared_for || 'Unassigned')}</td>
-        <td class="num">${d._intent_score || d._signal_count || '—'}${d._strong_signals ? ` <span title="strong intent signals (RFP/Purchase/Meeting)" style="color:#C2410C;font-weight:700;font-size:10px;">🔥${d._strong_signals}</span>` : ''}</td>
+        <td class="num">${d._intent_score || d._signal_count || '—'}${d._strong_signals ? ` <span title="explicit transfer-need statements (RFP or relevance 3)" style="color:#C2410C;font-weight:700;font-size:10px;">🔥${d._strong_signals}</span>` : ''}</td>
         <td style="font-size:11px;color:var(--ds-hint);">▸ open</td>
       </tr>`).join('');
 

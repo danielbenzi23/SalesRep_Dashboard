@@ -512,7 +512,7 @@ const STATE_TO_REP = {
 
 // Full dossier generation (Starbridge + HubSpot + Claude). Shared by the
 // interactive ?action=dossier route and the automatic weekly cron.
-async function generateDossier(buyerId, buyerName) {
+async function generateDossier(buyerId, buyerName, selection = null) {
   const hsToken = process.env.HUBSPOT_TOKEN;
   // Resolve the REAL institution name from the buyer record — signal feeds
   // often carry meeting/contract titles instead of the school name.
@@ -540,6 +540,9 @@ async function generateDossier(buyerId, buyerName) {
     starbridge_summary: summary,
     starbridge_attributes: attributes,
     recent_signals: (Array.isArray(signals) ? signals : (signals?.result || [])).slice(0, 10),
+    // Why the weekly triage picked this account (what the institution said about transfer).
+    // Lead the banner and TL;DR with this when present.
+    selection: selection || null,
     hubspot: hubspot ? {
       company: hubspot.company,
       owner: hubspot.owner_name,
@@ -603,6 +606,7 @@ WRITING RULES (hard):
 - Use "candidly" rather than "honestly".
 - Be honest about gaps and risk. Flag hard budgets and unclear ownership.
 - Inline <b>...</b> tags allowed for emphasis. Word limits below are strict.
+- If DATA.selection is present, the banner and first TL;DR item must lead with what the institution itself said about transfer (DATA.selection.why_selected). Competitor conference attendance, travel, lodging or a competitor contract is context for the watch list, never evidence of buying intent. Do not write that a school is "evaluating platforms" or "signals interest" unless the signal text says so.
 
 DATA:
 ${JSON.stringify(payload, null, 2)}
@@ -641,6 +645,85 @@ Return VALID JSON only:
   if (s < 0 || e2 <= s) throw new Error('Claude did not return JSON');
   let jsonStr = txt.slice(s, e2 + 1).replace(/,(\s*[\}\]])/g, '$1');
   return JSON.parse(jsonStr);
+}
+
+// ---------- Weekly plan triage (Claude reads the signals before we rank) ----------
+// The mechanical ranker treated every Purchase/Meeting row as equal "strong
+// intent", so a hotel invoice for a competitor's summit scored like an RFP and
+// a buyer with three expense lines for one trip outranked a board minute that
+// explicitly said "we need to grow transfer". This step asks Claude to read
+// each signal and grade how directly the institution states a transfer need.
+//
+// relevance scale (per signal):
+//   3 = institution explicitly says it needs/wants to increase transfer
+//       enrollment, fix credit evaluation / articulation / transfer advising,
+//       or has a committed step (report, task force, budget, RFP, pilot).
+//   2 = transfer is named as a priority or problem, but no stated action.
+//   1 = tangential (generic enrollment talk, a competitor product mention,
+//       competitor conference travel, lodging, registration, agency fees).
+//   0 = noise / unrelated.
+const SIGNAL_SKIP_KEYS = /(^|_)(id|ids|url|urls|uri|href|logo|image|avatar|slug|hash|token|key)s?$/i;
+function compactSignalRow(row) {
+  const out = {};
+  let n = 0;
+  for (const [k, v] of Object.entries(row || {})) {
+    if (n >= 14) break;
+    if (SIGNAL_SKIP_KEYS.test(k)) continue;
+    if (v == null || v === '') continue;
+    if (typeof v === 'string') { out[k] = v.length > 400 ? v.slice(0, 400) + '…' : v; n++; }
+    else if (typeof v === 'number' || typeof v === 'boolean') { out[k] = v; n++; }
+    else if (Array.isArray(v) && v.length && v.every(x => typeof x === 'string')) { out[k] = v.slice(0, 6).join('; ').slice(0, 400); n++; }
+  }
+  return out;
+}
+
+async function triageWeeklySignals(buyers) {
+  const apiKey = process.env.ANTHROPIC_API_KEY;
+  if (!apiKey) throw new Error('ANTHROPIC_API_KEY not set');
+  const result = {};
+  const CHUNK = 40;
+  for (let i = 0; i < buyers.length; i += CHUNK) {
+    const chunk = buyers.slice(i, i + CHUNK).map(b => ({
+      buyerId: String(b.buyerId),
+      institution: b.name,
+      signals: b.signals.slice(0, 8).map((s, idx) => ({ i: idx, type: s.type, bridge: s.bridge, ...compactSignalRow(s.row) }))
+    }));
+    const prompt = `You triage weekly sales signals for DegreeSight, which sells AI-powered transfer credit evaluation and degree audit to colleges and universities. The sales team wants dossiers on institutions that are SAYING, in their own meeting minutes, board materials, plans or RFPs, that they need to grow transfer enrollment or fix how they evaluate transfer credit, articulate courses, or advise transfer students. An institution stating that need is worth more than an institution that merely bought something, even if it is not shopping for a tool yet.
+
+Grade EVERY signal for EVERY institution below.
+
+relevance (integer):
+3 = the institution explicitly states a need or goal to increase transfer enrollment, improve transfer credit evaluation / articulation / transfer advising, or names a committed step (report due, task force, dedicated staff, budget line, RFP/RFI, pilot, policy with a deadline).
+2 = transfer enrollment or transfer credit is named as a priority, concern or discussion topic, but no stated action or goal.
+1 = tangential: generic enrollment or retention talk, a competitor product mentioned in passing, attendance at a competitor's conference, travel, lodging, registration or agency fees, routine purchases.
+0 = unrelated or noise.
+
+Hard rules:
+- Expense and travel line items (hotel, lodging, airfare, agency fee, registration, per diem, Uber, parking) are NEVER above 1, no matter which vendor or conference they mention. Attending a Stellic or CollegeSource event tells us the competitor is present; it does not tell us the school wants to buy anything. Set noise:"competitor_expense" on those.
+- Several expense lines for the same trip count as ONE weak signal, not several.
+- A renewal or existing contract with a competitor is relevance 1 (useful context, not intent).
+- Do not infer intent that is not in the text. If a signal only has a title and that title is an expense description, grade it by the title.
+- If the signal carries a Starbridge match score or match reasoning, use it as evidence but apply this scale.
+
+Return VALID JSON only, no prose:
+{"buyers": {"<buyerId>": {"signals": [{"i": 0, "relevance": 0, "noise": null | "competitor_expense" | "unrelated"}], "max_relevance": 0, "verdict": "pursue" | "context_only" | "drop", "reason": "≤30 words, plain language, quote or paraphrase what the institution actually said. No em dashes."}}}
+
+DATA:
+${JSON.stringify(chunk)}`;
+    const r = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: { 'x-api-key': apiKey, 'anthropic-version': '2023-06-01', 'content-type': 'application/json' },
+      body: JSON.stringify({ model: 'claude-haiku-4-5', max_tokens: 6000, messages: [{ role: 'user', content: prompt }] })
+    });
+    if (!r.ok) throw new Error(`Claude triage ${r.status}: ${(await r.text()).slice(0, 200)}`);
+    const j = await r.json();
+    const txt = (j.content?.[0]?.text || '').replace(/^```(?:json)?\s*/gim, '').replace(/\s*```\s*$/gim, '');
+    const s = txt.indexOf('{'), e2 = txt.lastIndexOf('}');
+    if (s < 0 || e2 <= s) throw new Error('Claude triage did not return JSON');
+    const parsed = JSON.parse(txt.slice(s, e2 + 1).replace(/,(\s*[\}\]])/g, '$1'));
+    Object.assign(result, parsed.buyers || {});
+  }
+  return result;
 }
 
 export default async function handler(req, res) {
@@ -821,14 +904,19 @@ Return VALID JSON only: {"subject": "...", "body": "..."}`;
 
       // Local helpers shared by the interactive subs AND the automatic cron
       const runPlan = async () => {
-        const STRONG_TYPES = new Set(['RFP', 'Purchase', 'Meeting']);
-        const [hot, rfp, purchase, meeting] = await Promise.all([
+        // Candidate pool. Meeting minutes are pulled over 30 days sorted by
+        // date: Starbridge dates a minute by when it was POSTED by the school,
+        // and often ingests it weeks later, so a 7-day window silently dropped
+        // the board/senate minutes that matter most. The 90-day dedupe below
+        // keeps a wider window from re-surfacing accounts we already covered.
+        const [hot, rfp, purchase, meeting, meetingRecent] = await Promise.all([
           listTopRecentSignals({ pageSize: 100, sort: 'Hotness', relativeDatePeriodFrom: 'LastSevenDays' }),
-          listTopRecentSignals({ pageSize: 50, filterType: ['RFP'],      relativeDatePeriodFrom: 'LastSevenDays' }).catch(() => ({ result: [] })),
-          listTopRecentSignals({ pageSize: 50, filterType: ['Purchase'], relativeDatePeriodFrom: 'LastSevenDays' }).catch(() => ({ result: [] })),
-          listTopRecentSignals({ pageSize: 50, filterType: ['Meeting'],  relativeDatePeriodFrom: 'LastSevenDays' }).catch(() => ({ result: [] }))
+          listTopRecentSignals({ pageSize: 50,  filterType: ['RFP'],      relativeDatePeriodFrom: 'LastThirtyDays' }).catch(() => ({ result: [] })),
+          listTopRecentSignals({ pageSize: 50,  filterType: ['Purchase'], relativeDatePeriodFrom: 'LastSevenDays' }).catch(() => ({ result: [] })),
+          listTopRecentSignals({ pageSize: 100, filterType: ['Meeting'],  sort: 'Date',    relativeDatePeriodFrom: 'LastThirtyDays' }).catch(() => ({ result: [] })),
+          listTopRecentSignals({ pageSize: 100, filterType: ['Meeting'],  sort: 'Hotness', relativeDatePeriodFrom: 'LastThirtyDays' }).catch(() => ({ result: [] }))
         ]);
-        const all = [...(hot.result || []), ...(rfp.result || []), ...(purchase.result || []), ...(meeting.result || [])];
+        const all = [...(hot.result || []), ...(rfp.result || []), ...(purchase.result || []), ...(meeting.result || []), ...(meetingRecent.result || [])];
         const byBuyer = {};
         const seenSignal = new Set(); // dedupe the same signal appearing in two fetches
         for (const s of all) {
@@ -838,16 +926,52 @@ Return VALID JSON only: {"subject": "...", "body": "..."}`;
           if (seenSignal.has(sigKey)) continue;
           seenSignal.add(sigKey);
           const type = s.bridge?.filterType || null;
-          const weight = STRONG_TYPES.has(type) ? 3 : 1;
-          if (!byBuyer[bid]) byBuyer[bid] = { buyerId: bid, name: s.row?.buyerName || s.row?.name || '', signal_count: 0, intent_score: 0, strong_signals: 0, top_signal: null };
+          if (!byBuyer[bid]) byBuyer[bid] = { buyerId: bid, name: s.row?.buyerName || s.row?.name || '', signal_count: 0, intent_score: 0, strong_signals: 0, top_signal: null, signals: [] };
           byBuyer[bid].signal_count++;
-          byBuyer[bid].intent_score += weight;
-          if (STRONG_TYPES.has(type)) byBuyer[bid].strong_signals++;
-          // Prefer a strong-intent signal as the headline signal
-          if (!byBuyer[bid].top_signal || (STRONG_TYPES.has(type) && !STRONG_TYPES.has(byBuyer[bid].top_signal.type))) {
-            byBuyer[bid].top_signal = { type, name: s.row?.name || null, bridge: s.bridge?.name || null };
-          }
+          byBuyer[bid].signals.push({ type, name: s.row?.name || null, bridge: s.bridge?.name || null, row: s.row || {} });
           if (!byBuyer[bid].name && s.row?.name) byBuyer[bid].name = s.row.name;
+        }
+
+        // Claude reads every signal and grades how directly the institution
+        // states a transfer need (see triageWeeklySignals). Ranking is then
+        // driven by that grade, not by signal type or line-item count.
+        //   relevance 3 -> 4 pts (strong), RFP -> 4 pts (strong, always)
+        //   relevance 2 -> 2 pts, relevance 1 -> 1 pt (expense/travel lines
+        //   from a competitor event are capped at 1 pt per buyer in total),
+        //   relevance 0 -> 0.
+        // Buyers whose best signal is 0 or 1 are dropped from the top list.
+        let triage = {};
+        let triage_error = null;
+        try { triage = await triageWeeklySignals(Object.values(byBuyer)); }
+        catch (e) { triage_error = e.message; console.error('[weekly triage]', e.message); }
+        const LEGACY_STRONG = new Set(['RFP', 'Purchase', 'Meeting']);
+        for (const b of Object.values(byBuyer)) {
+          const tr = triage[String(b.buyerId)];
+          let expensePts = 0;
+          let best = null; let bestRel = -1;
+          for (let i = 0; i < b.signals.length; i++) {
+            const sig = b.signals[i];
+            const g = tr?.signals?.find(x => x.i === i) || null;
+            const isRfp = sig.type === 'RFP';
+            let rel = g ? Math.max(0, Math.min(3, Number(g.relevance) || 0)) : (tr ? 0 : (LEGACY_STRONG.has(sig.type) ? 2 : 1));
+            if (isRfp) rel = 3;
+            sig.relevance = rel; sig.noise = g?.noise || null;
+            let pts = rel === 3 ? 4 : rel === 2 ? 2 : rel === 1 ? 1 : 0;
+            if (rel <= 1 && (sig.noise === 'competitor_expense' || sig.type === 'Purchase')) {
+              // all expense lines of one buyer together are worth at most 1 point
+              const room = Math.max(0, 1 - expensePts);
+              pts = Math.min(pts, room); expensePts += pts;
+            }
+            b.intent_score += pts;
+            if (rel === 3) b.strong_signals++;
+            if (rel > bestRel) { bestRel = rel; best = sig; }
+          }
+          b.max_relevance = Math.max(0, bestRel);
+          b.triage_verdict = tr?.verdict || (triage_error ? 'untriaged' : 'drop');
+          b.triage_reason = tr?.reason || null;
+          b.top_signal = best ? { type: best.type, name: best.name, bridge: best.bridge, relevance: best.relevance } : null;
+          // keep the plan payload small: drop raw rows, keep graded summaries
+          b.signals = b.signals.map(s2 => ({ type: s2.type, name: s2.name, bridge: s2.bridge, relevance: s2.relevance, noise: s2.noise }));
         }
         // 90-day dedupe: accounts already dossiered in a recent weekly bundle
         // are skipped and reported in the Notes line of the channel message.
@@ -869,18 +993,25 @@ Return VALID JSON only: {"subject": "...", "body": "..."}`;
         } catch (e) { console.error('[weekly dedupe]', e.message); }
 
         const TOP_N = Math.max(1, Math.min(25, parseInt(process.env.WEEKLY_TOP_N || '10', 10) || 10));
+        // Rank: best single signal first (a school that SAYS it needs transfer
+        // help beats a school with many weak signals), then total points.
         const ranked = Object.values(byBuyer)
-          .sort((a, b) => b.intent_score - a.intent_score || b.signal_count - a.signal_count);
+          .sort((a, b) => b.max_relevance - a.max_relevance || b.intent_score - a.intent_score || b.signal_count - a.signal_count);
         const targets = [];
         const skipped_recent = [];
+        const dropped_low = [];
         for (const t of ranked) {
           const hit = recentlyDossiered.get(String(t.buyerId)) || recentlyDossiered.get((t.name || '').toLowerCase());
           if (hit) { if (skipped_recent.length < 12) skipped_recent.push(t.name || String(t.buyerId)); continue; }
+          // Only institutions that at least name transfer as a priority make the
+          // list. Expense/travel/competitor-event-only buyers are dropped even
+          // if that leaves fewer than TOP_N rows: a short honest list beats padding.
+          if (t.max_relevance < 2 && t.triage_verdict !== 'untriaged') { if (dropped_low.length < 20) dropped_low.push(t.name || String(t.buyerId)); continue; }
           targets.push(t);
           if (targets.length >= TOP_N) break;
         }
         const rfp_count = (rfp.result || []).length;
-        return { week, targets, skipped_recent, rfp_count, total_signals: all.length };
+        return { week, targets, skipped_recent, dropped_low, triage_error, rfp_count, total_signals: all.length, buyers_considered: Object.keys(byBuyer).length };
       };
 
       const runDigests = async (dossierSummaries) => {
@@ -1057,7 +1188,7 @@ Return VALID JSON only:
           }
           if (!state) {
             const plan = await runPlan();
-            state = { week, phase: 'dossiers', targets: plan.targets, skipped_recent: plan.skipped_recent || [], rfp_count: plan.rfp_count || 0, dossiers: [], pdfs: [], pdf_ok: 0, pdf_fail: 0, started_at: new Date().toISOString(), errors: [] };
+            state = { week, phase: 'dossiers', targets: plan.targets, skipped_recent: plan.skipped_recent || [], dropped_low: plan.dropped_low || [], triage_error: plan.triage_error || null, rfp_count: plan.rfp_count || 0, dossiers: [], pdfs: [], pdf_ok: 0, pdf_fail: 0, started_at: new Date().toISOString(), errors: [] };
             freshPlan = true; // hand off; heavy work starts on the next link
           }
         }
@@ -1078,8 +1209,9 @@ Return VALID JSON only:
               state.phase = 'digests';
             } else {
               const t = state.targets[idx];
-              const d = await generateDossier(t.buyerId, t.name || '');
+              const d = await generateDossier(t.buyerId, t.name || '', { why_selected: t.triage_reason || null, graded_signals: t.signals || [] });
               d._signal_count = t.signal_count; d._intent_score = t.intent_score; d._strong_signals = t.strong_signals;
+              d._max_relevance = t.max_relevance; d._triage_reason = t.triage_reason || null;
               state.dossiers.push(d);
               try {
                 const pdf = await renderPdfBuffer(serverDossierHtml(d));
@@ -1103,9 +1235,10 @@ Return VALID JSON only:
               const items = state.dossiers.map(d3 => ({
                 school: d3.school_name,
                 banner: (d3.dossier?.banner_text || '').replace(/<[^>]+>/g, ''),
-                top_signal: (state.targets.find(t3 => t3.buyerId === d3.buyerId) || {}).top_signal || null
+                top_signal: (state.targets.find(t3 => t3.buyerId === d3.buyerId) || {}).top_signal || null,
+                why_selected: (state.targets.find(t3 => t3.buyerId === d3.buyerId) || {}).triage_reason || null
               }));
-              const hp = `For each account below, write ONE hook line for a sales Slack message: ≤28 words, concrete and specific (name systems, dollar amounts, dates, contract ends, RFP numbers when present in the data). No em dashes, no fluff. DATA: ${JSON.stringify(items)}
+              const hp = `For each account below, write ONE hook line for a sales Slack message: ≤28 words, concrete and specific (name systems, dollar amounts, dates, contract ends, RFP numbers when present in the data). Lead with what the institution itself said about transfer (why_selected). Never claim a school is "evaluating platforms" or "signals interest" unless the data states it. Competitor conference attendance or a competitor contract is context, not intent, so say it plainly as context. No em dashes, no fluff. DATA: ${JSON.stringify(items)}
 Return VALID JSON only: {"hooks": {"<school>": "<hook>"}}`;
               const hr = await fetch('https://api.anthropic.com/v1/messages', {
                 method: 'POST',
@@ -1119,7 +1252,7 @@ Return VALID JSON only: {"hooks": {"<school>": "<hook>"}}`;
 
             const bundle = {
               week: state.week, targets: state.targets, dossiers: state.dossiers, digests: state.digests,
-              pdfs: state.pdfs, hooks: state.hooks, skipped_recent: state.skipped_recent, rfp_count: state.rfp_count,
+              pdfs: state.pdfs, hooks: state.hooks, skipped_recent: state.skipped_recent, dropped_low: state.dropped_low || [], triage_error: state.triage_error || null, rfp_count: state.rfp_count,
               saved_at: new Date().toISOString(), saved_by: 'weekly-cron', folder_url: DRIVE_FOLDER_LINK
             };
             await blobPut(`weekly/${state.week}/bundle.json`, Buffer.from(JSON.stringify(bundle)), 'application/json');
@@ -1138,7 +1271,8 @@ Return VALID JSON only: {"hooks": {"<school>": "<hook>"}}`;
             } else state.n8n_mirror = 'skipped (N8N_WEEKLY_WEBHOOK_URL not set)';
 
             // 2) Single channel message to #team-sales (Weekly Signal Dossiers format)
-            const score5 = t3 => (t3?.strong_signals >= 2 || t3?.intent_score >= 9) ? 5 : (t3?.strong_signals >= 1 || t3?.intent_score >= 5) ? 4 : 3;
+            // 5 = RFP or two or more explicit "we need transfer help" statements; 4 = one explicit statement; 3 = transfer named as a priority, no stated action
+            const score5 = t3 => (t3?.top_signal?.type === 'RFP' || t3?.strong_signals >= 2) ? 5 : (t3?.strong_signals >= 1 || t3?.max_relevance >= 3) ? 4 : 3;
             const stateOf = d3 => {
               const s0 = String(d3.state_used || d3.dossier?.state || '').toUpperCase().trim();
               if (s0) return s0;
@@ -1153,7 +1287,7 @@ Return VALID JSON only: {"hooks": {"<school>": "<hook>"}}`;
             const assignedRep = d3 => d3.prepared_for || STATE_TO_REP[stateOf(d3) || ''] || null;
             const rows2 = state.dossiers
               .map(d3 => ({ d: d3, t: state.targets.find(t3 => t3.buyerId === d3.buyerId) || {}, p: (state.pdfs || []).find(p2 => p2.school === d3.school_name) }))
-              .sort((a, b) => (b.t.intent_score || 0) - (a.t.intent_score || 0));
+              .sort((a, b) => ((b.t.max_relevance || 0) - (a.t.max_relevance || 0)) || ((b.t.intent_score || 0) - (a.t.intent_score || 0)));
             const lines = rows2.map((r6, i) => {
               const st = stateOf(r6.d);
               const hook = slackEsc((state.hooks || {})[r6.d.school_name] || String(r6.d.dossier?.banner_text || '').replace(/<[^>]+>/g, '').slice(0, 140));
@@ -1164,6 +1298,8 @@ Return VALID JSON only: {"hooks": {"<school>": "<hook>"}}`;
             const notes = [];
             if ((state.skipped_recent || []).length) notes.push(`${slackEsc(state.skipped_recent.join(', '))} re-surfaced but were dossiered within the last 90 days, so they were skipped.`);
             if (!state.rfp_count) notes.push('No new RFP/RFI signals came out of the bridges this week.');
+            if ((state.dropped_low || []).length) notes.push(`Set aside as weak signals (competitor conference travel, expense lines, generic enrollment talk): ${slackEsc(state.dropped_low.slice(0, 8).join(', '))}${state.dropped_low.length > 8 ? ` and ${state.dropped_low.length - 8} more` : ''}.`);
+            if (state.triage_error) notes.push('Candidly, the signal triage step failed this week, so ranking fell back to signal type. Treat scores with caution.');
             const header = `Here are the top ${rows2.length} leads this week with full dossiers.\n`;
             const footer =
               (notes.length ? `\n\nNotes: ${notes.join(' ')}` : '') +
@@ -1232,7 +1368,8 @@ Return VALID JSON only: {"hooks": {"<school>": "<hook>"}}`;
       if (sub === 'resend') {
         const bundle = await blobReadJson(`weekly/${week}/bundle.json`);
         if (!bundle) return res.status(404).json({ error: `No saved bundle for week ${week}` });
-        const score5 = t3 => (t3?.strong_signals >= 2 || t3?.intent_score >= 9) ? 5 : (t3?.strong_signals >= 1 || t3?.intent_score >= 5) ? 4 : 3;
+        // 5 = RFP or two or more explicit "we need transfer help" statements; 4 = one explicit statement; 3 = transfer named as a priority, no stated action
+            const score5 = t3 => (t3?.top_signal?.type === 'RFP' || t3?.strong_signals >= 2) ? 5 : (t3?.strong_signals >= 1 || t3?.max_relevance >= 3) ? 4 : 3;
         const stateOf = d3 => {
           const s0 = String(d3.state_used || d3.dossier?.state || '').toUpperCase().trim();
           if (s0) return s0;
@@ -1243,7 +1380,7 @@ Return VALID JSON only: {"hooks": {"<school>": "<hook>"}}`;
         const assignedRep = d3 => d3.prepared_for || STATE_TO_REP[stateOf(d3) || ''] || null;
         const rows2 = (bundle.dossiers || [])
           .map(d3 => ({ d: d3, t: (bundle.targets || []).find(t3 => t3.buyerId === d3.buyerId) || {}, p: (bundle.pdfs || []).find(p2 => p2.school === d3.school_name) }))
-          .sort((a, b) => (b.t.intent_score || 0) - (a.t.intent_score || 0));
+          .sort((a, b) => ((b.t.max_relevance || 0) - (a.t.max_relevance || 0)) || ((b.t.intent_score || 0) - (a.t.intent_score || 0)));
         const lines = rows2.map((r6, i) => {
           const st = stateOf(r6.d);
           const hook = slackEsc((bundle.hooks || {})[r6.d.school_name] || String(r6.d.dossier?.banner_text || '').replace(/<[^>]+>/g, '').slice(0, 140));
@@ -1254,6 +1391,8 @@ Return VALID JSON only: {"hooks": {"<school>": "<hook>"}}`;
         const notes = [];
         if ((bundle.skipped_recent || []).length) notes.push(`${slackEsc(bundle.skipped_recent.join(', '))} re-surfaced but were dossiered within the last 90 days, so they were skipped.`);
         if (!bundle.rfp_count) notes.push('No new RFP/RFI signals came out of the bridges this week.');
+        if ((bundle.dropped_low || []).length) notes.push(`Set aside as weak signals (competitor conference travel, expense lines, generic enrollment talk): ${slackEsc(bundle.dropped_low.slice(0, 8).join(', '))}${bundle.dropped_low.length > 8 ? ` and ${bundle.dropped_low.length - 8} more` : ''}.`);
+        if (bundle.triage_error) notes.push('Candidly, the signal triage step failed this week, so ranking fell back to signal type. Treat scores with caution.');
         const header = `Here are the top ${rows2.length} leads this week with full dossiers.\n`;
         const footer =
           (notes.length ? `\n\nNotes: ${notes.join(' ')}` : '') +
