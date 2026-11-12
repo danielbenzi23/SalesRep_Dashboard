@@ -77,6 +77,17 @@ async function hsSearch(token, body, attempt = 0) {
   return r.json();
 }
 
+// How many meetings the team actually held in the window, scored or not. One
+// call, counted from the search `total` rather than fetching the records.
+async function countTeamMeetings(token, sinceMs) {
+  const filters = [{ propertyName: 'hubspot_owner_id', operator: 'IN', values: REPS }];
+  if (sinceMs) filters.push({ propertyName: 'hs_meeting_start_time', operator: 'GTE', value: String(sinceMs) });
+  try {
+    const r = await hsSearch(token, { filterGroups: [{ filters }], properties: ['hs_meeting_title'], limit: 1 });
+    return r.total || 0;
+  } catch { return null; }   // a missing denominator must not break the page
+}
+
 async function fetchScoredMeetings(token, sinceMs) {
   const filters = [{ propertyName: 'call_scored_at', operator: 'HAS_PROPERTY' }];
   if (sinceMs) filters.push({ propertyName: 'hs_meeting_start_time', operator: 'GTE', value: String(sinceMs) });
@@ -156,9 +167,10 @@ export default async function handler(req, res) {
     const type = VIEW_TYPES.has(typeParam) ? typeParam : 'sales';
     const sinceMs = days ? Date.now() - days * 86400000 : null;
 
-    let all;
+    let all, meetingsHeld = null;
     try { all = await fetchScoredMeetings(hsToken, sinceMs); }
     catch (e) { return res.status(502).json({ error: 'hubspot_failed', detail: e.message }); }
+    meetingsHeld = await countTeamMeetings(hsToken, sinceMs);
 
     // Attribute each call to the rep who led it (call_rep_owner_id, falling back
     // to the meeting owner) and keep only the DS sales team.
@@ -240,7 +252,8 @@ export default async function handler(req, res) {
       trend,
       recent,
       view_counts: viewCounts,
-      totals: { scored_in_hubspot: all.length, shown: calls.length, team_scored: teamRecords.length }
+      totals: { scored_in_hubspot: all.length, shown: calls.length,
+                team_scored: teamRecords.length, meetings_held: meetingsHeld }
     });
   } catch (e) {
     console.error('[/api/call-performance]', e);
