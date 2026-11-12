@@ -35,7 +35,7 @@
   .cp .seg { display:inline-flex; border:0.5px solid rgba(0,0,0,0.15); border-radius:6px; overflow:hidden; }
   .cp .seg button { border:none; background:#fff; padding:4px 10px; font:inherit; font-size:12px; cursor:pointer; color:#5F5E5A; border-radius:0; box-shadow:none; }
   .cp .seg button.on { background:#E3F2FB; color:#0F3B91; font-weight:600; }
-  .cp .kpi-row { display:grid; grid-template-columns:repeat(4,1fr); gap:12px; margin-bottom:16px; }
+  .cp .kpi-row { display:grid; grid-template-columns:repeat(auto-fit, minmax(180px,1fr)); gap:12px; margin-bottom:16px; }
   .cp .kpi { background:#F7F7F4; border-radius:10px; padding:14px 16px; }
   .cp .kpi .kpi-label { font-size:12px; color:#5F5E5A; }
   .cp .kpi .kpi-value { font-size:26px; font-weight:500; margin-top:4px; }
@@ -93,7 +93,25 @@
     if (!t) { t = document.createElement('div'); t.id = 'cp-tip'; t.className = 'cp-tip'; document.body.appendChild(t); }
     return t;
   }
-  function showTip(html, x, y) { const t = tipEl(); t.innerHTML = html; t.style.display = 'block'; const w = t.offsetWidth, h = t.offsetHeight; t.style.left = Math.min(x + 14, window.innerWidth - w - 10) + 'px'; t.style.top = Math.max(8, y - h - 12) + 'px'; }
+  // The tooltip used to sit ALWAYS above the cursor. On the weekly trend the
+  // hovered points are near the top of the plot, so the box landed on the
+  // legend and hid whichever rep's name was underneath it. Prefer below the
+  // cursor, flip only when there is no room, and flip sideways rather than
+  // run off the right edge.
+  function showTip(html, x, y) {
+    const t = tipEl();
+    t.innerHTML = html;
+    t.style.display = 'block';
+    const w = t.offsetWidth, h = t.offsetHeight, pad = 12;
+    let top = y + 20;
+    if (top + h > window.innerHeight - pad) top = y - h - 20;
+    if (top < pad) top = pad;
+    let left = x + 16;
+    if (left + w > window.innerWidth - pad) left = x - w - 16;
+    if (left < pad) left = pad;
+    t.style.left = left + 'px';
+    t.style.top = top + 'px';
+  }
   function hideTip() { tipEl().style.display = 'none'; }
 
   function mount(root, opts = {}) {
@@ -190,6 +208,7 @@
       body.innerHTML = `
         <div class="kpi-row">
           <div class="kpi"><div class="kpi-label">Calls scored</div><div class="kpi-value">${focus.calls}</div><div class="kpi-sub">${rep ? esc(rep.name) : d.reps.length + ' reps'} · ${TYPE_BLURB[state.type] || ''}</div></div>
+          ${meetingsHeldKpi(d)}
           <div class="kpi"><div class="kpi-label">${rep ? 'Score' : 'Team score'}</div><div class="kpi-value">${fmt(focus.overall)}<span style="font-size:13px;color:#888780"> /100</span></div><div class="kpi-sub">BANT ${fmt(focus.bant)} · Next step ${fmt(focus.next_step)} · Intake ${fmt(focus.intake)}${rep ? ' · team ' + fmt(d.team.overall) : ''}</div></div>
           <div class="kpi"><div class="kpi-label">Next meeting booked on the call</div><div class="kpi-value">${fmt(focus.booked_on_call_rate)}%</div><div class="kpi-sub">${focus.outcomes.attempted_on_call || 0} attempted · ${focus.outcomes.deferred_to_email || 0} deferred to email</div></div>
           ${rep
@@ -254,6 +273,23 @@
       body.querySelectorAll('tr[data-call]').forEach(tr => tr.addEventListener('click', () => {
         const n = tr.nextElementSibling; if (n && n.classList.contains('notes-row')) n.style.display = n.style.display === 'none' ? '' : 'none';
       }));
+    }
+
+    // Scoring needs a Zoom transcript, so "calls scored" is transcript coverage,
+    // not how much the team met. Measured: 143 of 533 meetings in 90 days. Left
+    // implicit, the leaderboard reads as activity and the rep with the best
+    // recording habit looks like the busiest one.
+    function meetingsHeldKpi(d) {
+      const held = d.totals && d.totals.meetings_held;
+      if (!held) return '';
+      const scored = (d.totals.team_scored != null) ? d.totals.team_scored : d.team.calls;
+      const pct = held > 0 ? Math.round(scored / held * 100) : null;
+      const low = pct != null && pct < 60;
+      return `<div class="kpi">
+        <div class="kpi-label">Meetings held by the team</div>
+        <div class="kpi-value">${held}</div>
+        <div class="kpi-sub">${scored} scored${pct != null ? ` · <span style="color:${low ? '#854F0B' : '#5F5E5A'}">${pct}% have a transcript</span>` : ''}</div>
+      </div>`;
     }
 
     function bar(v, color) {
