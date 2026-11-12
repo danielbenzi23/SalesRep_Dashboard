@@ -24,10 +24,22 @@ export const config = { maxDuration: 60 };
 // average.
 const REPS = ['118972528', '84179396', '90988586', '30458491']; // Jay, Michael, Charles, Drew
 
-// Call types that count as "sales calls" for the default view. Check-ins are
-// customer relationship calls where BANT is not the point, so they are hidden
-// unless the viewer asks for everything.
+// Three views, because "calls scored" was mixing two different things.
+//
+// Measured over 90 days: 143 scored records, of which 64 were check_ins or
+// "other" — webinars, a podcast interview, an implementation kickoff, internal
+// chats. Their average is 17.3 against 35.7 for real selling conversations, and
+// every single zero score in the period came from that group. Blending them
+// pulled the team score down ~8 points and made it unreadable as a coaching
+// number.
+//
+// So: SALES is the selling conversation, MEETINGS is everything else that was
+// still a scheduled conversation, ALL is the blend that used to be the only
+// option. Anything with no call_type falls into MEETINGS rather than silently
+// counting as a sales call.
 const SALES_TYPES = new Set(['discovery', 'demo', 'follow_up']);
+const VIEW_TYPES = new Set(['sales', 'meetings', 'all']);
+const isSalesType = c => SALES_TYPES.has(c.call_type || '');
 
 const PROPS = [
   'hs_meeting_title', 'hs_meeting_start_time', 'hs_meeting_source', 'hubspot_owner_id',
@@ -140,7 +152,8 @@ export default async function handler(req, res) {
     const url = new URL(req.url, `http://${req.headers.host || 'x'}`);
     const daysParam = url.searchParams.get('days') || '90';
     const days = daysParam === 'all' ? null : Math.max(7, Math.min(730, parseInt(daysParam, 10) || 90));
-    const type = url.searchParams.get('type') === 'all' ? 'all' : 'sales';
+    const typeParam = url.searchParams.get('type');
+    const type = VIEW_TYPES.has(typeParam) ? typeParam : 'sales';
     const sinceMs = days ? Date.now() - days * 86400000 : null;
 
     let all;
@@ -149,10 +162,20 @@ export default async function handler(req, res) {
 
     // Attribute each call to the rep who led it (call_rep_owner_id, falling back
     // to the meeting owner) and keep only the DS sales team.
-    const calls = all
+    const teamRecords = all
       .map(c => ({ ...c, rep_id: String(c.call_rep_owner_id || c.hubspot_owner_id || '') }))
-      .filter(c => REPS.includes(c.rep_id))
-      .filter(c => type === 'all' || SALES_TYPES.has(c.call_type || ''));
+      .filter(c => REPS.includes(c.rep_id));
+
+    const calls = teamRecords.filter(c =>
+      type === 'all' ? true : type === 'meetings' ? !isSalesType(c) : isSalesType(c));
+
+    // Counts for all three views, computed before filtering, so the buttons can
+    // show what each one holds instead of making the viewer click to find out.
+    const viewCounts = {
+      sales: teamRecords.filter(isSalesType).length,
+      meetings: teamRecords.filter(c => !isSalesType(c)).length,
+      all: teamRecords.length
+    };
 
     const byRep = {};
     for (const id of REPS) byRep[id] = [];
@@ -216,7 +239,8 @@ export default async function handler(req, res) {
       reps,
       trend,
       recent,
-      totals: { scored_in_hubspot: all.length, shown: calls.length }
+      view_counts: viewCounts,
+      totals: { scored_in_hubspot: all.length, shown: calls.length, team_scored: teamRecords.length }
     });
   } catch (e) {
     console.error('[/api/call-performance]', e);
