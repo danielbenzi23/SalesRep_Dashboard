@@ -2058,6 +2058,17 @@
       const ownerId = salesData?.rep?.ownerId;
       const url = ownerId ? `/api/sales-data?action=today_ai&ownerId=${ownerId}` : '/api/sales-data?action=today_ai';
       const r = await fetch(url);
+      // The team view has no health score, no rank and no personal to-do list.
+      // That is a correct refusal, not a failure, so it must not paint red.
+      if (r.status === 400) {
+        const j = await r.json().catch(() => ({}));
+        if (j.error === 'not_applicable_to_team') {
+          const b = document.getElementById('rep-ai-todos');
+          if (b) b.innerHTML = '<li style="color:#888780">' +
+            (j.detail || 'Pick a rep to see the daily briefing.') + '</li>';
+          return;
+        }
+      }
       if (!r.ok) throw new Error('today_ai ' + r.status);
       const d = await r.json();
       renderTodayAi(d);
@@ -2316,6 +2327,7 @@
       t.innerHTML = '<div style="color:#888780">No matching contacts</div>';
       return;
     }
+
     const fmtDelta = (d, suffix = '') => {
       if (d == null) return '—';
       if (Math.abs(d) < 0.5) return '<span class="meta">0</span>';
@@ -2330,15 +2342,15 @@
       const arrow = d > 0 ? '▲' : '▼';
       return `<span style="color:${color};font-weight:500">${arrow} ${Math.abs(d)}</span>`;
     };
-    const tierBadge = (t) => {
-      if (!t) return '—';
+    const tierBadge = (tr) => {
+      if (!tr) return '—';
       const map = {
         very_high: { color: '#0F6E56', bg: '#E1F5EE', txt: 'Very high' },
         high:      { color: '#185FA5', bg: '#E6F1FB', txt: 'High' },
         medium:    { color: '#854F0B', bg: '#FAEEDA', txt: 'Medium' },
         low:       { color: '#791F1F', bg: '#FCEBEB', txt: 'Low' }
       };
-      const m = map[t] || { color: '#5F5E5A', bg: '#F1EFE8', txt: t };
+      const m = map[tr] || { color: '#5F5E5A', bg: '#F1EFE8', txt: tr };
       return `<span class="badge" style="background:${m.bg};color:${m.color}">${m.txt}</span>`;
     };
     const dealsBadge = (n, contactId, contactName) => {
@@ -2346,22 +2358,44 @@
       const safeName = (contactName || '').replace(/'/g, '&#39;');
       return `<span class="badge positive" style="cursor:pointer;user-select:none" onclick="openContactDeals('${contactId}','${safeName}')" title="Click to see deals">🤝 ${n}</span>`;
     };
-    t.innerHTML = `<table>
-      <thead><tr>
-        <th>#</th>
-        <th>Contact</th>
-        <th>Company</th>
-        <th style="text-align:right">Score</th>
-        <th>Tier</th>
-        <th style="text-align:right">Δ score</th>
-        <th style="text-align:right">Δ rank</th>
-        <th>Deals</th>
-        <th>Stage</th>
-        <th>Owner</th>
-        <th>Actions</th>
-        <th></th>
-      </tr></thead>
-      <tbody>${contacts.map(c => `
+
+    // Dias desde o último engajamento real. Verde até 7 dias, escuro até 30,
+    // cinza depois — a cor é só reforço, o número já diz tudo.
+    const fmtAgo = (days, mktDays) => {
+      let main = '<span class="meta">—</span>';
+      if (days != null) {
+        const label = days <= 0 ? 'today' : days === 1 ? '1d'
+          : days < 30 ? days + 'd'
+          : days < 365 ? Math.floor(days / 30) + 'mo'
+          : Math.floor(days / 365) + 'y';
+        const color = days <= 7 ? '#0F6E56' : days <= 30 ? '#12305B' : '#888780';
+        main = `<span style="color:${color}">${label}</span>`;
+      }
+      // Abertura de e-mail marketing entra só como dica: disparo em massa e o
+      // Apple Mail abrem sozinhos, então isso não é sinal de interesse.
+      if (mktDays != null && mktDays <= 30) {
+        main += ` <span style="font-size:10px;color:#888780" title="last marketing email open">📧${mktDays}d</span>`;
+      }
+      return main;
+    };
+
+    const badge = (txt, bg, color) =>
+      `<span class="badge" style="background:${bg};color:${color}">${escapeHtml(txt)}</span>`;
+
+    const statusCell = (c) => {
+      const b = c.status_badges || [];
+      if (!b.length) return '<span class="meta">—</span>';
+      return b.map(s => {
+        if (s.startsWith('Working')) return badge(s, '#F1EFE8', '#5F5E5A');
+        if (s.startsWith('In deal')) return badge(s, '#E6F1FB', '#185FA5');
+        if (s === 'Nurture')         return badge(s, '#F3EEFB', '#6B3FA0');
+        if (s === 'Ex-customer')     return badge(s, '#FCEBEB', '#791F1F');
+        if (s === 'New')             return badge(s, '#E1F5EE', '#0F6E56');
+        return badge(s, '#F1EFE8', '#5F5E5A');
+      }).join(' ');
+    };
+
+    const row = (c) => `
         <tr>
           <td><strong style="font-weight:500">${c.rank}</strong></td>
           <td>
@@ -2370,10 +2404,16 @@
           </td>
           <td>${escapeHtml(c.company || '—')}</td>
           <td style="text-align:right;font-weight:500">${Math.round(c.score)}</td>
-          <td>${tierBadge(c.tier)}</td>
           <td style="text-align:right">${fmtDelta(c.score_delta)}</td>
           <td style="text-align:right">${fmtRankDelta(c.rank_delta)}</td>
-          <td>${dealsBadge(c.deal_count, c.id, c.name)}</td>
+          <td style="text-align:center;white-space:nowrap">${fmtAgo(c.last_activity_days, c.marketing_open_days)}</td>
+          <td>${tierBadge(c.tier)}</td>
+          <td>${statusCell(c)}</td>
+          <td style="white-space:nowrap">
+            ${dealsBadge(c.deal_count, c.id, c.name)}
+            ${(c.open_deal_labels || []).length
+              ? `<div class="meta">${escapeHtml(c.open_deal_labels.join(', '))}</div>` : ''}
+          </td>
           <td>${escapeHtml(c.lifecyclestage || '—')}</td>
           <td>${escapeHtml(c.owner || '—')}</td>
           <td style="white-space:nowrap;">
@@ -2381,8 +2421,80 @@
             <span class="badge" style="cursor:pointer;user-select:none;background:#E5F5F2;color:#0A7D68" onclick="draftLeadEmail('${c.id}')" title="Claude drafts a personalized email, opens in your mail app">✉️ Draft</span>
           </td>
           <td><a href="${c.hubspot_url}" target="_blank" style="font-size:11px;color:#2D58A8">open ↗</a></td>
-        </tr>`).join('')}</tbody>
+        </tr>`;
+
+    const table = (rows) => `<table>
+      <thead><tr>
+        <th>#</th>
+        <th>Contact</th>
+        <th>Company</th>
+        <th style="text-align:right">Score</th>
+        <th style="text-align:right" title="Lead score gained since the comparison date">Δ score</th>
+        <th style="text-align:right">Δ rank</th>
+        <th style="text-align:center" title="Most recent site visit, form submission, 1:1 sales email open or tracked engagement">Last activity</th>
+        <th>Tier</th>
+        <th>Status</th>
+        <th>Deals</th>
+        <th>Stage</th>
+        <th>Owner</th>
+        <th>Actions</th>
+        <th></th>
+      </tr></thead>
+      <tbody>${rows.map(row).join('')}</tbody>
     </table>`;
+
+    // As seções vêm calculadas pelo backend (sections.new / sections.movers),
+    // com as mesmas regras do e-mail semanal. Calcular de novo aqui seria
+    // criar uma terceira definição de "lead novo".
+    const sec = leadsCache.sections || {};
+    const byId = new Map(contacts.map(c => [String(c.id), c]));
+    const pick = (ids) => (ids || []).map(id => byId.get(String(id))).filter(Boolean);
+    const newRows = search ? [] : pick(sec.new).slice(0, 20);
+    const movers  = search ? [] : pick(sec.movers).slice(0, 20);
+
+    const pool = leadsCache.pool || {};
+    const ex = pool.excluded || {};
+    const exTotal = (ex.lost || 0) + (ex.internal || 0) + (ex.advanced || 0) + (ex.customerDomain || 0);
+
+    const heading = (emoji, title, sub) => `
+      <div style="margin:18px 0 6px">
+        <div style="font-size:13px;font-weight:600;color:#12305B">${emoji} ${escapeHtml(title)}</div>
+        <div class="meta" style="margin-top:2px">${escapeHtml(sub)}</div>
+      </div>`;
+
+    let html = '';
+
+    if (!search) {
+      html += `
+      <div class="meta" style="line-height:1.7;margin-bottom:10px">
+        <strong style="color:#12305B">${pool.shown || contacts.length} leads</strong> ·
+        ${pool.gained_score || 0} gained score ·
+        ${pool.engaged_7d || 0} engaged in the last 7 days ·
+        ${pool.working || 0} being worked ·
+        ${pool.in_deal || 0} in an open deal ·
+        ${pool.nurture || 0} in nurture
+        ${exTotal ? `<br>Excluded: ${ex.advanced || 0} in Quote/Driving to Close/Contract · ${ex.customerDomain || 0} at customer institutions · ${ex.lost || 0} closed-lost in the last 12 months · ${ex.internal || 0} internal.` : ''}
+        <br>Ranked by <strong>weekly momentum</strong> — score gained, then most recent engagement, then total score. Same rules as the weekly email.
+      </div>`;
+    }
+
+    if (newRows.length) {
+      html += heading('🆕', `New this week (${newRows.length})`,
+        'Created in the last 7 days. Nobody working them, no open deal, not in nurture.');
+      html += table(newRows);
+    }
+    if (movers.length) {
+      html += heading('🔥', `Movers (${movers.length})`,
+        'Gained score or engaged in the last 7 days. Marketing email opens alone do not count.');
+      html += table(movers);
+    }
+    if (newRows.length || movers.length) {
+      html += heading('📋', `Top ${contacts.length} by weekly momentum`,
+        'The full list. Leads being worked, in a deal, in nurture or ex-customers stay here and are tagged.');
+    }
+    html += table(contacts);
+
+    t.innerHTML = html;
   }
 
   function leadById(id) {
@@ -3949,5 +4061,6 @@
     if (fresh) { salesData = fresh; renderAll(); }
   })();
 </script>
+<script src="/feedback-button.js"></script>
 </body>
 </html>
