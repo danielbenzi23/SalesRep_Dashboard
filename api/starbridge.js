@@ -478,6 +478,26 @@ function slackChunks(header, lines, footer, maxLen = 3200) {
   return chunks;
 }
 
+// One entry per dossier PDF for the n8n mirror webhook (Drive copy + HubSpot
+// company attachment). Carries the HubSpot company id matched during
+// generation so n8n does not have to re-match by name.
+function pdfEntry(d, url, week) {
+  const said = (d.dossier?.what_they_said || [])[0] || null;
+  return {
+    school: d.school_name,
+    url,
+    week: week || null,
+    prepared_for: d.prepared_for || null,
+    buyer_id: d.buyerId || null,
+    hubspot_company_id: d._hs_company_id || null,
+    hubspot_company_name: d._hs_matched || null,
+    state: d.state_used || null,
+    confidence: d.confidence || null,
+    quote: said ? { text: said.quote || null, source: said.source || null, date: said.date || null } : null,
+    summary: String(d.dossier?.banner_text || '').replace(/<[^>]+>/g, '').slice(0, 500) || null
+  };
+}
+
 async function slackDmByEmail(email, text) {
   const testEmail = process.env.SLACK_TEST_EMAIL;
   const target = testEmail || email;
@@ -578,6 +598,7 @@ async function generateDossier(buyerId, buyerName, selection = null) {
     state_used: stateCode || null,
     _assigned_via: hubspot?.destination_owner ? 'hubspot' : (territoryRep ? `territory (${stateCode})` : null),
     _hs_matched: hubspot?.company?.name || null,
+    _hs_company_id: hubspot?.company?.id || null,
     _hs_matched_via: hubspot?.matched_via || null,
     owner_name: hubspot?.owner_name || null,
     deal_state: hubspot?.deal_state || 'unknown',
@@ -1216,7 +1237,7 @@ Return VALID JSON only:
               try {
                 const pdf = await renderPdfBuffer(serverDossierHtml(d));
                 const up = await blobPut(`weekly/${state.week}/pdf/${safeName(d.school_name)}.pdf`, pdf, 'application/pdf');
-                state.pdfs.push({ school: d.school_name, url: up.url, prepared_for: d.prepared_for || null });
+                state.pdfs.push(pdfEntry(d, up.url, state.week));
                 state.pdf_ok++;
               } catch (e) { state.pdf_fail++; state.errors.push(`pdf ${d.school_name}: ${e.message}`.slice(0, 200)); }
               if (state.dossiers.length >= state.targets.length) state.phase = 'digests';
@@ -1413,6 +1434,27 @@ Return VALID JSON only: {"hooks": {"<school>": "<hook>"}}`;
         } catch (e) {
           return res.status(502).json({ error: `Slack: ${e.message}` });
         }
+      }
+
+      // --- mirror: re-send a saved week's PDFs to the n8n mirror webhook ---
+      // (Drive copy + HubSpot company attachment). Use to backfill or to retry
+      // after an n8n change. Does not regenerate or post to Slack.
+      if (sub === 'mirror') {
+        const n8nHook = process.env.N8N_WEEKLY_WEBHOOK_URL;
+        if (!n8nHook) return res.status(500).json({ error: 'N8N_WEEKLY_WEBHOOK_URL not set' });
+        const bundle = await blobReadJson(`weekly/${week}/bundle.json`);
+        if (!bundle) return res.status(404).json({ error: `No saved bundle for week ${week}` });
+        // Rebuild entries from the saved dossiers so older bundles get the
+        // HubSpot id and summary fields too.
+        const pdfs = (bundle.pdfs || []).map(p => {
+          const d = (bundle.dossiers || []).find(d2 => d2.school_name === p.school);
+          return d ? { ...pdfEntry(d, p.url, bundle.week), ...(p.prepared_for && !d.prepared_for ? { prepared_for: p.prepared_for } : {}) } : { ...p, week: bundle.week };
+        }).filter(p => p.confidence !== 'do_not_send');
+        const only = url.searchParams.get('school');
+        const payload = { week: bundle.week, pdfs: only ? pdfs.filter(p => (p.school || '').toLowerCase().includes(only.toLowerCase())) : pdfs, drive_folder: DRIVE_FOLDER_LINK, replay: true };
+        const nr = await fetch(n8nHook, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+        const body = await nr.text().catch(() => '');
+        return res.status(nr.ok ? 200 : 502).json({ ok: nr.ok, status: nr.status, sent: payload.pdfs.length, week: bundle.week, n8n: body.slice(0, 500) });
       }
 
       // --- cron_status: progress of the automatic run (for the dashboard) ---
