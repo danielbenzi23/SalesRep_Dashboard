@@ -764,7 +764,10 @@ export default async function handler(req, res) {
   const isCron =
     (!!cronSecret && (authHdr === `Bearer ${cronSecret}` || urlSecret === cronSecret)) ||
     urlSecret === chainSecret ||
-    !!req.headers['x-vercel-cron-schedule'];
+    // x-vercel-cron-schedule is an ordinary request header that any caller can
+    // send, so it only counts while CRON_SECRET is not configured. Once the env
+    // is set, Vercel Cron sends the Bearer secret and that alone is accepted.
+    (!cronSecret && !!req.headers['x-vercel-cron-schedule']);
   if (!user && isCron) user = { email: 'cron@degreesight.com', role: 'system' };
   if (!user) return res.status(401).json({ error: 'Not authenticated' });
 
@@ -774,7 +777,7 @@ export default async function handler(req, res) {
   // Vercel Cron cannot carry query params in the path — it hits /api/starbridge
   // bare, authenticated with CRON_SECRET and tagged with x-vercel-cron-schedule.
   // Route those invocations straight into the weekly pipeline.
-  if (!url.searchParams.get('action') && (req.headers['x-vercel-cron-schedule'] || isCron)) {
+  if (!url.searchParams.get('action') && isCron) {
     action = 'weekly';
     cronSubOverride = 'cron';
   }
