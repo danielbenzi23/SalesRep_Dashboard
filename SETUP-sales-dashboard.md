@@ -107,3 +107,20 @@ If usage grows and re-analysis cost matters, we can later cache by writing the J
 **Claude returns invalid JSON** — rare; endpoint returns 502 with first 200 chars of the response. Usually means the transcript got mangled by the HTML stripper. Open the Confluence page and check the formatting.
 
 **"transcript_too_short"** — the page body has under 100 characters after HTML stripping. Likely the wrong page id or an empty transcript.
+
+## Sign-in
+
+Sessions last 30 days, then each person signs in again.
+
+Each person can have their own password. Run `node scripts/hash-password.mjs`,
+enter the email and password, and add the printed line to the
+`DASHBOARD_USER_PASSWORDS` env var in Vercel (Production), which is one JSON
+object:
+
+```
+{ "a@degreesight.com": "scrypt$...", "b@degreesight.com": "scrypt$..." }
+```
+
+Redeploy after changing it. Anyone listed there can no longer use the shared
+`DASHBOARD_PASSWORD`; people not listed yet still can. Once everyone is listed,
+delete `DASHBOARD_PASSWORD` to switch the shared password off.

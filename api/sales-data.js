@@ -421,6 +421,52 @@ async function todayAiHandler({ hsToken, ownerId, ownerName, annualQuota, res })
   }
 }
 
+// Series for the My pipeline charts: won dollars by month against the monthly
+// share of quota, and per-quarter outcomes with the median days from created
+// to closed won. Year to date, from deals already fetched for the page.
+function buildPipelineTrends({ wonYtdArr, lostYtdArr, annualQuota, now }) {
+  const year = now.getUTCFullYear();
+  const months = [];
+  for (let m = 0; m <= now.getUTCMonth(); m++) {
+    months.push({ month: `${year}-${String(m + 1).padStart(2, '0')}`, won: 0, won_count: 0 });
+  }
+  const quarters = {};
+  const q = t => {
+    const d = new Date(t); const k = `Q${Math.floor(d.getUTCMonth() / 3) + 1}`;
+    return quarters[k] || (quarters[k] = { quarter: k, won: 0, lost: 0, won_amount: 0, cycle: [] });
+  };
+  for (const d of wonYtdArr) {
+    const t = Date.parse(d.closedate || ''); if (!Number.isFinite(t)) continue;
+    const dt = new Date(t); if (dt.getUTCFullYear() !== year) continue;
+    const amount = parseFloat(d.amount) || 0;
+    const row = months[dt.getUTCMonth()];
+    if (row) { row.won += amount; row.won_count += 1; }
+    const qr = q(t); qr.won += 1; qr.won_amount += amount;
+    const c = Date.parse(d.createdate || '');
+    if (Number.isFinite(c) && t >= c) qr.cycle.push((t - c) / 86400000);
+  }
+  for (const d of lostYtdArr) {
+    const t = Date.parse(d.closedate || ''); if (!Number.isFinite(t)) continue;
+    if (new Date(t).getUTCFullYear() !== year) continue;
+    q(t).lost += 1;
+  }
+  const median = arr => {
+    if (!arr.length) return null;
+    const v = arr.slice().sort((a, b) => a - b); const mid = Math.floor(v.length / 2);
+    return Math.round(v.length % 2 ? v[mid] : (v[mid - 1] + v[mid]) / 2);
+  };
+  return {
+    monthly: months,
+    monthly_quota: annualQuota > 0 ? annualQuota / 12 : null,
+    quarters: Object.keys(quarters).sort().map(k => {
+      const r = quarters[k]; const decided = r.won + r.lost;
+      return { quarter: k, won: r.won, lost: r.lost, won_amount: r.won_amount,
+        win_rate: decided ? r.won / decided : null, median_days_to_win: median(r.cycle), cycle_deals: r.cycle.length };
+    })
+  };
+}
+
+
 export default async function handler(req, res) {
   const token = process.env.DASHBOARD_TOKEN;
   const hsToken = process.env.HUBSPOT_TOKEN;
@@ -1611,7 +1657,8 @@ export default async function handler(req, res) {
       email_performance: emailPerformance,
       recent_feed: recentActivityFeed
     },
-    pipeline: { funnel, open_deals: openDealsTable, metrics: pipelineMetrics },
+    pipeline: { funnel, open_deals: openDealsTable, metrics: pipelineMetrics,
+      trends: buildPipelineTrends({ wonYtdArr, lostYtdArr, annualQuota, now }) },
     recent: { won: recentWon, lost: recentLost },
     // Available reps for admin/manager dropdown
     available_reps: (user.role === 'admin' || user.role === 'manager')

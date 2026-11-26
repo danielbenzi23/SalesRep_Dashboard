@@ -8,7 +8,7 @@
   },
   "dependencies": {
     "pg": "^8.13.1",
-    "@vercel/blob": "^0.27.0",
+    "@vercel/blob": "^2.9.0",
     "@sparticuz/chromium": "^131.0.0",
     "puppeteer-core": "^23.11.1"
   }

@@ -94,6 +94,7 @@
 <script>window.va = window.va || function () { (window.vaq = window.vaq || []).push(arguments); };</script>
 <script defer src="/_vercel/insights/script.js"></script>
 <script defer src="/_vercel/speed-insights/script.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.5.0/dist/chart.umd.js"></script>
 <script src="/call-performance.js"></script>
 <script>
   // Auto-track tab clicks as custom events (dashboards are SPA, URL doesn't change)
@@ -328,8 +329,8 @@
 
       <div style="margin-top: 14px;">
         <div class="panel">
-          <div class="panel-title">📹 Recent Zoom meetings</div>
-          <div class="panel-sub">Last 30 days · click to see AI Companion summary + recording</div>
+          <div class="panel-title">📹 Recent meetings</div>
+          <div class="panel-sub">Last 30 days, from HubSpot · click for the call score, coaching notes and transcript</div>
           <div id="recent-zoom-meetings" class="loading">Loading…</div>
         </div>
       </div>
@@ -372,6 +373,30 @@
       <div style="margin-top: 14px;" class="panel">
         <div class="panel-title" id="open-deals-title">My open deals</div>
         <div id="open-deals-table" class="loading">Loading…</div>
+      </div>
+
+      <!-- Pipeline charts (year to date) -->
+      <div style="margin-top:14px;display:grid;grid-template-columns:repeat(auto-fit,minmax(460px,1fr));gap:14px">
+        <div class="panel">
+          <div class="panel-title">Open deal aging</div>
+          <div class="panel-sub" id="pc-aging-sub">Each dot is an open deal: days since the last activity against deal amount.</div>
+          <div style="position:relative;height:280px"><canvas id="pc-aging"></canvas></div>
+        </div>
+        <div class="panel">
+          <div class="panel-title">Closed won by month</div>
+          <div class="panel-sub" id="pc-monthly-sub">Dollars won each month this year.</div>
+          <div style="position:relative;height:280px"><canvas id="pc-monthly"></canvas></div>
+        </div>
+        <div class="panel">
+          <div class="panel-title">Won and lost by quarter</div>
+          <div class="panel-sub">Number of deals closed won and closed lost. The percentage is won out of both.</div>
+          <div style="position:relative;height:240px"><canvas id="pc-outcomes"></canvas></div>
+        </div>
+        <div class="panel">
+          <div class="panel-title">Days from created to closed won</div>
+          <div class="panel-sub">Median per quarter. The number of deals behind each bar is in the label.</div>
+          <div style="position:relative;height:240px"><canvas id="pc-cycle"></canvas></div>
+        </div>
       </div>
     </div>
 
@@ -1599,8 +1624,96 @@
     `).join('');
   }
 
+
+  // ===== My pipeline charts =====
+  // Series colors checked with the dataviz palette validator (CVD-safe).
+  const PC = { blue: '#2D58A8', green: '#18A87A', orange: '#B5491B', ink: '#2B2A27', muted: '#5F5E5A', grid: 'rgba(0,0,0,0.05)' };
+  const pcCharts = {};
+  const pcK = v => '$' + (Math.abs(v) >= 1e6 ? (v / 1e6).toFixed(1) + 'M' : Math.round(v / 1000) + 'K');
+  const pcMonth = m => new Date(m + '-01T00:00:00Z').toLocaleString('en-US', { month: 'short', timeZone: 'UTC' });
+  function pcDraw(id, cfg) {
+    if (pcCharts[id]) { pcCharts[id].destroy(); pcCharts[id] = null; }
+    const el = document.getElementById(id);
+    if (el && window.Chart) pcCharts[id] = new Chart(el, cfg);
+  }
+  function renderPipelineCharts() {
+    const p = salesData && salesData.pipeline;
+    if (!p || !window.Chart) return;
+    const STALE = 30;
+    const legend = { position: 'top', align: 'start', labels: { boxWidth: 12, color: PC.ink, font: { size: 11 } } };
+
+    // ---- Aging: days since last activity vs amount ----
+    const rows = (p.open_deals || []).filter(o => o.days_since_activity != null);
+    const pt = o => ({ x: o.days_since_activity, y: o.amount, o });
+    const dots = (label, data, color) => ({ label, data, backgroundColor: color, borderColor: '#fff', borderWidth: 2, pointRadius: 6, pointHoverRadius: 8 });
+    const quiet = rows.filter(o => o.days_since_activity >= STALE);
+    const quietAmount = quiet.reduce((n, o) => n + o.amount, 0);
+    document.getElementById('pc-aging-sub').textContent = rows.length
+      ? `${quiet.length} of ${rows.length} open deals (${fmtMoney(quietAmount)}) have had no activity in ${STALE}+ days.`
+      : 'No open deals to plot.';
+    pcDraw('pc-aging', {
+      type: 'scatter',
+      data: { datasets: [
+        dots(`Active in the last ${STALE} days`, rows.filter(o => o.days_since_activity < STALE).map(pt), PC.blue),
+        dots(`Quiet for ${STALE}+ days`, quiet.map(pt), PC.orange)] },
+      options: { responsive: true, maintainAspectRatio: false,
+        plugins: { legend: { ...legend, labels: { ...legend.labels, usePointStyle: true } },
+          tooltip: { callbacks: { title: items => items[0].raw.o.dealname,
+            label: c => { const o = c.raw.o; return [`${fmtMoney(o.amount)} · ${o.stage}`, `Last activity ${o.days_since_activity} days ago`]; } } } },
+        scales: { x: { beginAtZero: true, grid: { color: PC.grid }, ticks: { color: PC.muted }, title: { display: true, text: 'Days since last activity', color: PC.muted, font: { size: 11 } } },
+                  y: { beginAtZero: true, grid: { color: PC.grid }, ticks: { color: PC.muted, callback: pcK } } } }
+    });
+
+    const t = p.trends;
+    if (!t) return;
+
+    // ---- Closed won by month, with the monthly share of quota as a reference line ----
+    const quota = t.monthly_quota;
+    const total = t.monthly.reduce((n, m) => n + m.won, 0);
+    document.getElementById('pc-monthly-sub').textContent = quota
+      ? `Dollars won each month this year. The line is one twelfth of the annual quota (${fmtMoney(quota)}); ${fmtMoney(total)} won so far against ${fmtMoney(quota * t.monthly.length)} for these months.`
+      : 'Dollars won each month this year.';
+    const monthlySets = [{ type: 'bar', label: 'Closed won', data: t.monthly.map(m => m.won), backgroundColor: PC.green, borderRadius: 4, borderSkipped: 'start', maxBarThickness: 44, order: 2 }];
+    if (quota) monthlySets.push({ type: 'line', label: 'Monthly share of quota', data: t.monthly.map(() => quota), borderColor: PC.ink, borderWidth: 2, borderDash: [6, 4], pointRadius: 0, pointHoverRadius: 0, pointStyle: 'line', order: 1 });
+    pcDraw('pc-monthly', {
+      data: { labels: t.monthly.map(m => pcMonth(m.month)), datasets: monthlySets },
+      options: { responsive: true, maintainAspectRatio: false, interaction: { mode: 'index', intersect: false },
+        plugins: { legend: { ...legend, labels: { ...legend.labels, usePointStyle: true } }, tooltip: { callbacks: { label: c => c.dataset.type === 'line'
+          ? `${c.dataset.label}: ${fmtMoney(c.parsed.y)}`
+          : `Closed won: ${fmtMoney(c.parsed.y)} (${t.monthly[c.dataIndex].won_count} deal${t.monthly[c.dataIndex].won_count === 1 ? '' : 's'})` } } },
+        scales: { x: { grid: { display: false }, ticks: { color: PC.muted } },
+                  y: { beginAtZero: true, grid: { color: PC.grid }, ticks: { color: PC.muted, callback: pcK } } } }
+    });
+
+    // ---- Won and lost by quarter ----
+    const qs = t.quarters;
+    const seg = (label, field, color) => ({ label, data: qs.map(r => r[field]), backgroundColor: color, borderColor: '#fff', borderWidth: { top: 2 }, borderRadius: 2, maxBarThickness: 56 });
+    pcDraw('pc-outcomes', {
+      type: 'bar',
+      data: { labels: qs.map(r => r.quarter + (r.win_rate == null ? '' : '  ·  ' + Math.round(r.win_rate * 100) + '% won')),
+        datasets: [seg('Closed won', 'won', PC.green), seg('Closed lost', 'lost', PC.orange)] },
+      options: { responsive: true, maintainAspectRatio: false, interaction: { mode: 'index', intersect: false },
+        plugins: { legend },
+        scales: { x: { stacked: true, grid: { display: false }, ticks: { color: PC.ink } },
+                  y: { stacked: true, beginAtZero: true, grid: { color: PC.grid }, ticks: { color: PC.muted, precision: 0 }, title: { display: true, text: 'Deals', color: PC.muted, font: { size: 11 } } } } }
+    });
+
+    // ---- Sales cycle ----
+    const cyc = qs.filter(r => r.median_days_to_win != null);
+    pcDraw('pc-cycle', {
+      type: 'bar',
+      data: { labels: cyc.map(r => `${r.quarter}  (${r.cycle_deals} deal${r.cycle_deals === 1 ? '' : 's'})`),
+        datasets: [{ label: 'Median days to win', data: cyc.map(r => r.median_days_to_win), backgroundColor: PC.blue, borderRadius: 4, borderSkipped: 'start', maxBarThickness: 56 }] },
+      options: { responsive: true, maintainAspectRatio: false,
+        plugins: { legend: { display: false }, tooltip: { callbacks: { label: c => `${c.parsed.y} days (median of ${cyc[c.dataIndex].cycle_deals} won deals)` } } },
+        scales: { x: { grid: { display: false }, ticks: { color: PC.ink } },
+                  y: { beginAtZero: true, grid: { color: PC.grid }, ticks: { color: PC.muted }, title: { display: true, text: 'Days', color: PC.muted, font: { size: 11 } } } } }
+    });
+  }
+
   function renderPipeline() {
     const d = salesData;
+    try { renderPipelineCharts(); } catch (e) { console.error('[pipeline charts]', e); }
 
     renderPipelineMetrics();
 
@@ -1885,13 +1998,13 @@
 
   async function renderZoomMeetings(targetId, limit) {
     const target = document.getElementById(targetId);
-    target.innerHTML = '<div class="loading">Loading Zoom meetings…</div>';
+    target.innerHTML = '<div class="loading">Loading meetings…</div>';
     try {
       const ownerParam = salesData?.rep?.ownerId ? `&ownerId=${salesData.rep.ownerId}` : '';
       const r = await fetch(`/api/zoom?action=meetings&days=30&limit=${limit}${ownerParam}`);
       if (!r.ok) {
         const j = await r.json().catch(() => ({}));
-        target.innerHTML = `<div style="color:#888780;font-size:12px">Zoom unavailable: ${j.error || r.status}</div>`;
+        target.innerHTML = `<div style="color:#888780;font-size:12px">Meetings unavailable: ${escapeHtml(String(j.error || r.status))}</div>`;
         return;
       }
       const data = await r.json();
@@ -1900,16 +2013,16 @@
         return;
       }
       if (!data.meetings.length) {
-        target.innerHTML = '<div style="color:#888780;font-size:13px">No Zoom meetings in the last 30 days</div>';
+        target.innerHTML = '<div style="color:#888780;font-size:13px">No meetings logged in HubSpot in the last 30 days</div>';
         return;
       }
       target.innerHTML = data.meetings.slice(0, limit).map(m => `
-        <div class="transcript-card" onclick="openZoomSummary('${m.uuid || m.id}','${m.id}','${escapeHtml(m.topic || '')}')">
+        <div class="transcript-card" data-id="${escapeHtml(m.id)}" data-topic="${escapeHtml(m.topic || '')}" onclick="openZoomSummary(this.dataset.id, this.dataset.id, this.dataset.topic)">
           <div style="display:flex;justify-content:space-between;align-items:center">
             <div class="transcript-title">${escapeHtml(m.topic || '(no topic)')}</div>
             <span class="meta">${m.duration ? m.duration + ' min' : ''}</span>
           </div>
-          <div class="transcript-meta">${fmtDate(m.start_time)} · host: ${escapeHtml(m.host_email)}</div>
+          <div class="transcript-meta">${fmtDate(m.start_time)} · host: ${escapeHtml(m.host_email)}${m.scored ? ' · scored' : ''}</div>
         </div>
       `).join('');
     } catch (e) {
@@ -1919,8 +2032,8 @@
 
   async function openZoomSummary(uuid, id, topic) {
     const modal = document.getElementById('modal-bg');
-    document.getElementById('modal-title').textContent = topic || 'Zoom meeting';
-    document.getElementById('modal-body').innerHTML = '<div class="loading">Fetching Zoom AI summary…</div>';
+    document.getElementById('modal-title').textContent = topic || 'Meeting';
+    document.getElementById('modal-body').innerHTML = '<div class="loading">Fetching meeting summary…</div>';
     modal.classList.add('show');
     try {
       const params = uuid ? `meeting_uuid=${encodeURIComponent(uuid)}` : `meeting_id=${id}`;
@@ -1954,6 +2067,9 @@
         </div>`;
       }
 
+      if (d.note) {
+        body += `<div style="background:#FAEEDA;color:#854F0B;padding:10px 12px;border-radius:8px;font-size:12px;margin-bottom:14px">${escapeHtml(d.note)}</div>`;
+      }
       if (d.summary_title) {
         body += `<div style="font-weight:500;margin-bottom:8px">${escapeHtml(d.summary_title)}</div>`;
       }
@@ -1985,6 +2101,12 @@
           ${d.recording_share_url ? ` · <a href="${d.recording_share_url}" target="_blank" style="font-size:12px;color:#2D58A8">Share link ↗</a>` : ''}
         </div>`;
       }
+
+      const links = [
+        d.transcript_url ? `<a href="${escapeHtml(d.transcript_url)}" target="_blank" rel="noopener" style="font-size:12px;color:#2D58A8">Open transcript ↗</a>` : '',
+        d.hubspot_url ? `<a href="${escapeHtml(d.hubspot_url)}" target="_blank" rel="noopener" style="font-size:12px;color:#2D58A8">Open in HubSpot ↗</a>` : ''
+      ].filter(Boolean);
+      if (links.length) body += `<div style="margin-top:14px;padding-top:14px;border-top:0.5px solid rgba(0,0,0,0.08)">${links.join(' · ')}</div>`;
 
       document.getElementById('modal-body').innerHTML = body || '<div style="color:#888780">No data returned</div>';
     } catch (e) {
