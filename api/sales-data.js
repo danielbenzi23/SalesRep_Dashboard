@@ -555,6 +555,7 @@ export default async function handler(req, res) {
       };
 
       const deals = list.slice(0, 100).map(d => ({
+        id: d.hs_object_id || null,
         dealname: d.dealname || '(no name)',
         pipeline: pipelineLabels[d.pipeline] || d.pipeline,
         stage: stageLabels[d.dealstage] || STAGE_NAMES[d.dealstage] || d.dealstage,
@@ -1345,6 +1346,7 @@ export default async function handler(req, res) {
       const stale = days !== null && days >= STALE_DAYS;
       const hot = prob >= HOT_PROB_THRESHOLD;
       return {
+        id: d.hs_object_id || null,
         dealname: d.dealname || '(no name)',
         stage: STAGE_NAMES[d.dealstage] || d.dealstage,
         amount: parseFloat(d.amount) || 0,
@@ -1371,11 +1373,13 @@ export default async function handler(req, res) {
 
   // Recent won/lost
   const recentWon = recentWonResp.slice(0, 5).map(d => ({
+    id: d.id || d.properties.hs_object_id || null,
     dealname: d.properties.dealname || '(no name)',
     amount: parseFloat(d.properties.amount) || 0,
     close_date: d.properties.closedate || null
   }));
   const recentLost = recentLostResp.slice(0, 5).map(d => ({
+    id: d.id || d.properties.hs_object_id || null,
     dealname: d.properties.dealname || '(no name)',
     amount: parseFloat(d.properties.amount) || 0,
     close_date: d.properties.closedate || null,
@@ -1400,6 +1404,7 @@ export default async function handler(req, res) {
                      : engagement === 'stale' ? 0.4
                      : 0.5;
       return {
+        id: d.hs_object_id || null,
         dealname: d.dealname || '(no name)',
         stage: STAGE_NAMES[d.dealstage] || d.dealstage,
         stage_id: d.dealstage,

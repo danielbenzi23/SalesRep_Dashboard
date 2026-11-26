@@ -971,7 +971,7 @@
           : `<span class="badge stale">${a.days_stale}d stale</span>`;
         return `<div class="row" style="flex-direction:column;align-items:stretch">
           <div style="display:flex;justify-content:space-between">
-            <span><strong style="font-weight:500">${escapeHtml(a.dealname)}</strong> · ${a.stage}</span>
+            <span><strong style="font-weight:500">${escapeHtml(a.dealname)}</strong> · ${a.stage}${intakeLink(a.id)}</span>
             ${badge}
           </div>
           <div class="meta">${fmtMoneyK(a.amount)} · last activity ${fmtDate(a.last_activity_iso)}</div>
@@ -1453,7 +1453,7 @@
           ${owner === 'all' ? '<th>Owner</th>' : ''}<th>Close date</th></tr></thead>
         <tbody>${d.deals.map(o => `
           <tr>
-            <td>${escapeHtml(o.dealname)}</td>
+            <td>${escapeHtml(o.dealname)}${intakeLink(o.id)}</td>
             ${pipeline === 'all' ? `<td><span class="meta">${escapeHtml(o.pipeline || '—')}</span></td>` : ''}
             <td>${escapeHtml(o.stage || '—')}</td>
             <td>${statusBadge(o.status)}</td>
@@ -1673,7 +1673,7 @@
       </tr></thead>
       <tbody>${deals.map(o => `
         <tr>
-          <td>${escapeHtml(o.dealname)}</td>
+          <td>${escapeHtml(o.dealname)}${intakeLink(o.id)}</td>
           <td>${o.stage}</td>
           <td style="text-align:right">${fmtMoney(o.amount)}</td>
           <td style="text-align:right">${fmtPct(o.close_likelihood)}</td>
@@ -1713,11 +1713,11 @@
     const d = salesData;
     const won = document.getElementById('recent-won');
     won.innerHTML = d.recent.won.length
-      ? d.recent.won.map(w => `<div class="row"><span>${escapeHtml(w.dealname)}</span><span class="meta">${fmtMoney(w.amount)} · ${fmtDate(w.close_date)}</span></div>`).join('')
+      ? d.recent.won.map(w => `<div class="row"><span>${escapeHtml(w.dealname)}${intakeLink(w.id)}</span><span class="meta">${fmtMoney(w.amount)} · ${fmtDate(w.close_date)}</span></div>`).join('')
       : '<div style="color:#888780">No recent wins</div>';
     const lost = document.getElementById('recent-lost');
     lost.innerHTML = d.recent.lost.length
-      ? d.recent.lost.map(l => `<div class="row" style="flex-direction:column;align-items:stretch"><div style="display:flex;justify-content:space-between"><span>${escapeHtml(l.dealname)}</span><span class="meta">${fmtMoney(l.amount)} · ${fmtDate(l.close_date)}</span></div>${l.reason ? `<div class="meta">${escapeHtml(l.reason)}</div>` : ''}</div>`).join('')
+      ? d.recent.lost.map(l => `<div class="row" style="flex-direction:column;align-items:stretch"><div style="display:flex;justify-content:space-between"><span>${escapeHtml(l.dealname)}${intakeLink(l.id)}</span><span class="meta">${fmtMoney(l.amount)} · ${fmtDate(l.close_date)}</span></div>${l.reason ? `<div class="meta">${escapeHtml(l.reason)}</div>` : ''}</div>`).join('')
       : '<div style="color:#888780">No recent losses</div>';
   }
 
@@ -1798,6 +1798,16 @@
 
   function closeModal(e) {
     document.getElementById('modal-bg').classList.remove('show');
+  }
+
+  // Link to the deal's page in the sales intake app (discovery, intake, pricing,
+  // proposal). The app is addressed by HubSpot deal id; a signed-in rep opening
+  // a bare /<deal id> link is issued their token there.
+  const INTAKE_BASE = 'https://ds-sales-intake.vercel.app';
+  function intakeLink(id) {
+    const dealId = String(id == null ? '' : id).replace(/[^0-9]/g, '');
+    if (!dealId) return '';
+    return ` <a href="${INTAKE_BASE}/${dealId}" target="_blank" rel="noopener" title="Open this deal's intake" style="font-size:11px;color:#2D58A8;white-space:nowrap;text-decoration:none;margin-left:6px">Intake ↗</a>`;
   }
 
   function escapeHtml(s) {
@@ -2726,7 +2736,7 @@
         <div style="border:0.5px solid rgba(0,0,0,0.08); border-radius:10px; padding:12px 14px; margin-bottom:10px; background:#fafafa">
           <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:8px">
             <div style="flex:1; min-width:0">
-              <div style="font-weight:500; font-size:14px">${escapeHtml(d.dealname)}</div>
+              <div style="font-weight:500; font-size:14px">${escapeHtml(d.dealname)}${intakeLink(d.id)}</div>
               <div class="meta" style="margin-top:4px">
                 ${escapeHtml(d.stage)} ${statusBadge(d)}
                 ${d.probability != null ? ` · ${Math.round(d.probability * 100)}% prob` : ''}
