@@ -31,6 +31,8 @@ export default async function handler(req, res) {
   const url = new URL(req.url, `http://${req.headers.host || 'x'}`);
   const contactId = url.searchParams.get('contact_id');
   if (!contactId) return res.status(400).json({ error: 'contact_id required' });
+  // contact_id goes straight into a HubSpot URL path — accept record ids only.
+  if (!/^\d+$/.test(contactId)) return res.status(400).json({ error: 'contact_id must be numeric' });
 
   // 1) Get associated deal IDs
   let dealIds = [];

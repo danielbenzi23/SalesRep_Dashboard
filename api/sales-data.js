@@ -657,7 +657,7 @@ export default async function handler(req, res) {
       histTotals.avg_per_quarter = histTotals.quarters
         ? Math.round(histTotals.won_amount / histTotals.quarters) : 0;
 
-      res.setHeader('Cache-Control', 's-maxage=300, stale-while-revalidate=600');
+      res.setHeader('Cache-Control', 'private, max-age=300');
       return res.status(200).json({
         params: { scope, pipeline: pipelineSel, owner: ownerScope, ownerId },
         quarter: qNm,
@@ -888,7 +888,7 @@ export default async function handler(req, res) {
       }
       const ttc = rows.filter(r2 => r2.days_to_first_contact != null).map(r2 => r2.days_to_first_contact).sort((a, b) => a - b);
 
-      res.setHeader('Cache-Control', 's-maxage=300, stale-while-revalidate=900');
+      res.setHeader('Cache-Control', 'private, max-age=300');
       return res.status(200).json({
         days, filter: onlyWebinar ? 'webinar' : 'all',
         total: n, truncated, customers_excluded: customersDropped,
@@ -1015,8 +1015,8 @@ export default async function handler(req, res) {
       const missed = filtered.filter(r2 => !r2.contacted).length;
       const respTimes = filtered.filter(r2 => r2.days_to_contact != null).map(r2 => r2.days_to_contact).sort((a, b) => a - b);
       const medianResponse = respTimes.length ? respTimes[Math.floor(respTimes.length / 2)] : null;
-      // Submissions move slowly — cache at the edge so reloads are instant
-      res.setHeader('Cache-Control', 's-maxage=300, stale-while-revalidate=600');
+      // Submissions move slowly — cache in the browser so reloads are instant
+      res.setHeader('Cache-Control', 'private, max-age=300');
       return res.status(200).json({
         days, total: filtered.length, not_contacted: missed, median_days_to_contact: medianResponse,
         hidden_non_ds: hiddenCount, hidden_customers: hiddenCustomers,
@@ -1571,11 +1571,13 @@ export default async function handler(req, res) {
     bounce_rate: rate(bouncedCount)
   };
 
-  // Edge cache: repeat loads / rep switching are served from Vercel's edge for
-  // 3 min (auth still enforced by middleware, which runs before the cache).
+  // Browser cache only (private): repeat loads / rep switching stay instant for
+  // 3 min. This must not be s-maxage — the edge cache keys on the URL, not the
+  // auth cookie, and a sales rep's response is chosen by their cookie, so a
+  // shared cache would serve one rep's numbers to the next rep on the same URL.
   // The refresh button busts this with a &fresh= param.
   if (!urlObj.searchParams.get('fresh')) {
-    res.setHeader('Cache-Control', 's-maxage=180, stale-while-revalidate=600');
+    res.setHeader('Cache-Control', 'private, max-age=180');
   } else {
     res.setHeader('Cache-Control', 'no-store');
   }
