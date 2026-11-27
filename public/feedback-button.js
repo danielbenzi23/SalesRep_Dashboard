@@ -66,7 +66,13 @@
     // The form has no dashboard category, so the context goes in the links
     // field, which is free text and always shown to whoever triages.
     var params = { links: context() + '\n' + location.origin + location.pathname };
-    if (embed) params.embed = '1';
+    if (embed) {
+      params.embed = '1';
+      // Fresh URL per open: a cached copy of the form keeps whatever embed
+      // permission (frame-ancestors) it was first served with, so a fix to
+      // that header on the intake app would otherwise never reach the panel.
+      params.t = String(Date.now());
+    }
     return FEEDBACK_BASE + '/feedback?' + new URLSearchParams(params).toString();
   }
 

@@ -45,6 +45,27 @@
   </div>
   <div class="tab-panel"><div id="cp-root"></div></div>
 </div>
+<script>
+// Session ended (sessions last 30 days): any API call answering 401 sends the
+// person to the sign-in page instead of leaving a half-loaded dashboard.
+(function () {
+  var nativeFetch = window.fetch;
+  var leaving = false;
+  window.fetch = function (input, init) {
+    return nativeFetch.apply(this, arguments).then(function (res) {
+      try {
+        var path = new URL(res.url || (typeof input === 'string' ? input : input.url), location.href);
+        if (res.status === 401 && path.origin === location.origin && path.pathname.indexOf('/api/') === 0 &&
+            path.pathname !== '/api/login' && !leaving) {
+          leaving = true;
+          location.href = '/login.html';
+        }
+      } catch (e) {}
+      return res;
+    });
+  };
+})();
+</script>
 <script src="/call-performance.js"></script>
 <script>
   (async () => {

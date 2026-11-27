@@ -28,5 +28,13 @@ export default async function middleware(request) {
   const match = cookies.match(/(?:^|;\s*)auth=([^;]+)/);
   const user = match ? await verifyAuthCookie(match[1], token) : null;
   if (user) return;
+  // An API call cannot follow a redirect to an HTML login page in any useful
+  // way (the page would try to parse it as JSON). Say 401 and let the page
+  // send the person to sign in.
+  if (url.pathname.startsWith('/api/')) {
+    return new Response(JSON.stringify({ error: 'Not authenticated' }), {
+      status: 401, headers: { 'content-type': 'application/json', 'cache-control': 'no-store' }
+    });
+  }
   return Response.redirect(new URL('/login.html', request.url), 302);
 }
